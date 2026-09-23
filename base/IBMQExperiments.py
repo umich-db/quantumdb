@@ -63,6 +63,7 @@ parser.add_argument(
 )
 parser.add_argument("--week", type=str, default="Week84", help="Top-level results directory (relative to base/)")
 parser.add_argument("--iterations", type=int, default=10000, help="Optimizer max iterations")
+parser.add_argument("--input_idx", type=int, default=0, help="Problem folder <idx>_predicates: 0=P1, 1=P2, 2=P3")
 args, _ = parser.parse_known_args()
 
 TRIAL_ID = args.trial
@@ -427,15 +428,14 @@ def check_qubit_from_qubo_and_exit(qubo, max_qubits=23):
 
 
 def conduct_IBMQ_QPU_experiments():
-    """Run QAOA (SPIQ- or uninformed-initialized) on problem 0_predicates and save all outputs."""
+    """Run QAOA (SPIQ- or uninformed-initialized) on problem --input_idx and save all outputs."""
     processing = config.configuration["ibmq-processing"]
     if processing == "qpu":
         IBMQ.save_account(config.configuration["ibmq-token"])
         IBMQ.load_account()
 
     iterations = args.iterations
-    # Only problem folder 0_predicates is run; swap its card/pred/pred_sel files to change the query.
-    for i in range(0, 1):
+    for i in [args.input_idx]:
         card, pred, pred_sel = ProblemGenerator.get_join_ordering_problem('ExperimentalAnalysis/IBMQ/QPUPerformance/Problems/JSON/' + str(i) + '_predicates')
 
         print("Generating qubo", flush=True)

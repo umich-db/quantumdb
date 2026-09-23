@@ -1,12 +1,12 @@
 #!/bin/bash
-# Run SPIQ-initialized QAOA (COBYLA, reps=2) for 3 trials on problem 0_predicates.
+# Run SPIQ-initialized QAOA (COBYLA, reps=2) for 3 trials on one paper problem.
 # Requires the SPIQ JSON produced beforehand by base/spiq_initialization.py.
 # Drop --spiq_json to run the random-initialization baseline instead.
 
 cd /home/repro/sigmod-repro/base
 
-# IBMQExperiments.py only processes input_idx=0 (folder 0_predicates).
-SPIQ_INPUT_IDX=0
+# Problem folder <idx>_predicates: 0=P1, 1=P2, 2=P3.
+SPIQ_INPUT_IDX=${1:-0}
 SPIQ_DIR=/home/repro/sigmod-repro/spiq_init_outputs
 
 echo "Started running IBMQ experiments..."
@@ -27,6 +27,7 @@ for opt in 1; do          # 1 = COBYLA
         --reps "${reps}" \
         --optimizer "${opt}" \
         --spiq_json "${spiq_json}" \
+        --input_idx "${SPIQ_INPUT_IDX}" \
         >> "ibmq_experiment_opt${opt}_reps${reps}_trial${trial}.log" 2>&1
     done
   done

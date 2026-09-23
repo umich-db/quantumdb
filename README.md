@@ -64,16 +64,20 @@ The `Dockerfile` builds the QAOA environment (`docker run … ibmq` runs `script
 
 ## 3. Evaluation problems (paper §5.1)
 
-Only problem folder `0_predicates` is run by `IBMQExperiments.py`. To run a
-problem, copy its values into `0_predicates/{card,pred,pred_sel}.txt`.
-The SPIQ output names record the shape (`…_3rel_2pred`, `…_4rel_2pred`,
-`…_4rel_6pred`).
+Each paper problem has its own folder under
+`base/ExperimentalAnalysis/IBMQ/QPUPerformance/Problems/JSON/`, selected with
+`--input_idx` in all three scripts. SPIQ output names also record the shape
+(`…_3rel_2pred`, `…_4rel_2pred`, `…_4rel_6pred`).
 
-| Paper | Relations (card) | Predicates (selectivity) | Qubits = (R+P)(R-2) |
-|-------|------------------|--------------------------|--------|
-| P1 | 10, 15, 20 | (0,1) 0.1, (1,2) 0.1 | 5 |
-| P2 | 10, 15, 20, 30 | (0,1) 0.1, (2,3) 0.1 | 12 |
-| P3 | 10, 15, 20, 30 | 6 predicates, 0.1 … 0.6 (see `03_predicates`) | 20 |
+| Paper | `--input_idx` | Relations (card) | Predicates (selectivity) | Qubits = (R+P)(R-2) |
+|-------|---------------|------------------|--------------------------|--------|
+| P1 | 0 | 10, 15, 20 | (0,1) 0.1, (1,2) 0.1 | 5 |
+| P2 | 1 | 10, 15, 20, 30 | (0,1) 0.1, (2,3) 0.1 | 12 |
+| P3 | 2 | 10, 15, 20, 30 | (0,1) 0.1, (1,2) 0.2, (2,3) 0.3, (0,2) 0.4, (0,3) 0.5, (1,2) 0.6 | 20 |
+
+P3 lists `(1,2)` twice and has no `(1,3)` predicate. This is the problem the
+experiments ran on; the paper's description of "predicates between every
+relation" is inaccurate.
 
 ---
 
@@ -86,20 +90,20 @@ cd base
 python3 spiq_initialization.py --input_idx 0 --reps 2 --n_gens 4000 --out_dir ../spiq_init_outputs
 
 # 2a. SPIQ-initialized QAOA (QAOA environment), one run per trial
-python3 IBMQExperiments.py --trial 1 --reps 2 --optimizer 1 --week Week84 \
-    --spiq_json ../spiq_init_outputs/spiq_initial_point_input0_reps2_4rel_2pred.json
+python3 IBMQExperiments.py --trial 1 --reps 2 --optimizer 1 --input_idx 0 --week Week84 \
+    --spiq_json ../spiq_init_outputs/spiq_initial_point_input0_reps2_3rel_2pred.json
 
 # 2b. Random-initialization baseline: same command without --spiq_json
 #     (use a different --week so results do not overwrite each other)
-python3 IBMQExperiments.py --trial 1 --reps 2 --optimizer 1 --week Week85
+python3 IBMQExperiments.py --trial 1 --reps 2 --optimizer 1 --input_idx 0 --week Week85
 
 # 3. Post-process (run from the repository root)
 cd ..
-python3 base/postprocess_results.py --trial 1 --reps 2 --week Week84
+python3 base/postprocess_results.py --trial 1 --reps 2 --input_idx 0 --week Week84
 ```
 
 ### `spiq_initialization.py` flags
-* `--input_idx`: problem folder `<idx>_predicates`.
+* `--input_idx`: problem folder `<idx>_predicates` (0=P1, 1=P2, 2=P3).
 * `--reps`: QAOA depth p (2 in the paper).
 * `--n_gens`: GA generation budget. `claptonize` receives `n_gens // 2`.
 * `--n_proc`, `--n_starts`, `--n_rounds`: parallelism and restarts. `--err`: optional depolarizing noise during the search.
@@ -110,6 +114,7 @@ python3 base/postprocess_results.py --trial 1 --reps 2 --week Week84
 * `--optimizer`: 0 = AQGD, 1 = COBYLA (paper), 2 = SPSA.
 * `--spiq_json`: turns on SPIQ mode.
 * `--week`: top-level results directory.
+* `--input_idx`: problem folder (0=P1, 1=P2, 2=P3).
 * `--iterations`: max optimizer iterations (default 10000).
 
 ### `postprocess_results.py` flags
