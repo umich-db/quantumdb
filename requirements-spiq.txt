@@ -1,0 +1,12 @@
+# SPIQ environment (spiq_initialization.py + clapton/), kept separate from requirements.txt.
+# Aer / Algorithms versions are the ones reported in the paper (§4); the rest are the
+# direct imports of spiq_initialization.py and clapton/. Needs a qiskit < 1.0 release,
+# since spiq_initialization.py imports qiskit.algorithms.
+qiskit-aer==0.13.3
+qiskit-algorithms==0.3.1
+qiskit-optimization
+docplex
+stim
+pygad==3.3.1
+psutil
+numpy

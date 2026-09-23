@@ -1,3 +1,8 @@
+"""Parametrized Clifford gates / circuits whose parameters k in {0,1,2,3} select angle k*pi/2.
+
+Vendored from the CAFQA / SPIQ code base (Bharadwaj et al., 2026,
+arXiv:2602.14327).
+"""
 from __future__ import annotations
 import stim
 import numpy as np

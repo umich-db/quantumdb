@@ -1,1 +1,0 @@
-optimizer,opt_level,value_index,num_qubits,topology,strategy,sample,depth

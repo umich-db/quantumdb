@@ -1,3 +1,8 @@
+"""Example Hamiltonian builders (not used by the join-ordering pipeline).
+
+Vendored from the CAFQA / SPIQ code base (Bharadwaj et al., 2026,
+arXiv:2602.14327).
+"""
 import numpy as np
 from numbers import Number
 

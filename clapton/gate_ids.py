@@ -1,3 +1,8 @@
+"""stim gate ids for each Clifford-parameter value of every gate type.
+
+Vendored from the CAFQA / SPIQ code base (Bharadwaj et al., 2026,
+arXiv:2602.14327).
+"""
 ## stim gate ids
 # arbitrary 1q gate composed of elementary gates
 C1ids = [

@@ -1,3 +1,8 @@
+"""Energy evaluation of Pauli-sum Hamiltonians on stim Clifford circuits.
+
+Vendored from the CAFQA / SPIQ code base (Bharadwaj et al., 2026,
+arXiv:2602.14327).
+"""
 from __future__ import annotations
 import numpy as np
 import stim

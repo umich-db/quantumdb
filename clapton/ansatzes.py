@@ -1,3 +1,8 @@
+"""Hardware-efficient parametrized Clifford ansatzes (not used by the join-ordering pipeline).
+
+Vendored from the CAFQA / SPIQ code base (Bharadwaj et al., 2026,
+arXiv:2602.14327).
+"""
 from __future__ import annotations
 from clapton.clifford import ParametrizedCliffordCircuit
 from qiskit.circuit import QuantumCircuit, ParameterVector

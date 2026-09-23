@@ -52,24 +52,11 @@ ADD --chown=repro:repro . /home/repro/sigmod-repro
 
 WORKDIR /home/repro/sigmod-repro
 
-# Install Gurobi
-RUN mkdir gurobi
-WORKDIR /home/repro/sigmod-repro/gurobi
-RUN wget https://packages.gurobi.com/10.0/gurobi10.0.2_linux64.tar.gz
-RUN tar -xvf gurobi10.0.2_linux64.tar.gz
-WORKDIR /home/repro/sigmod-repro
-
 # install python packages
 ENV PATH $PATH:/home/repro/.local/bin
 RUN pip3 install -r requirements.txt
 ENV PYTHONPATH=/home/repro/sigmod-repro:${PYTHONPATH}
-RUN pip3 install pygad==3.3.1
-# RUN pip3 install stim
-
-# Gurobi ENV variables
-ENV GUROBI_HOME="/home/repro/sigmod-repro/gurobi/gurobi1002/linux64"
-ENV PATH $PATH:/home/repro/sigmod-repro/gurobi/gurobi1002/linux64/bin
-ENV LD_LIBRARY_PATH $GUROBI_HOME/bin
+# The SPIQ pre-pass needs a separate environment: see requirements-spiq.txt.
 
 ENTRYPOINT ["./scripts/run.sh"]
 CMD ["bash"]

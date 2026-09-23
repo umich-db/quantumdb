@@ -1,3 +1,8 @@
+"""Pauli-twirling transpiler pass (not used by the join-ordering pipeline).
+
+Vendored from the CAFQA / SPIQ code base (Bharadwaj et al., 2026,
+arXiv:2602.14327).
+"""
 from __future__ import annotations
 # This module defines a Qiskit transpiler pass from the official blog (https://docs.quantum.ibm.com/guides/custom-transpiler-pass) for adding Pauli twirls to two-qubit gates.
 # The PauliTwirl class inherits from TransformationPass and introduces Pauli twirling to

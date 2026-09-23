@@ -1,3 +1,12 @@
+"""Qiskit <-> stim conversion and QAOA-circuit relaxation used by SPIQ.
+
+Pipeline used in spiq_initialization.py:
+  modify_circuit -> transform_to_allowed_gates -> relax_qaoa_parameters
+  -> qiskit_to_stim + generate_qiskit_param_map.
+
+Vendored from the CAFQA / SPIQ code base (Bharadwaj et al., 2026,
+arXiv:2602.14327).
+"""
 from __future__ import annotations
 from clapton.clifford import ParametrizedCliffordCircuit
 
@@ -234,6 +243,10 @@ def qiskit_to_stim(circuit):
 
 
 def modify_circuit(circuit: QuantumCircuit) -> QuantumCircuit:
+    """Transpile to {rz, s, sx, cx, h} and replace constant Clifford Rz angles by S / Z gates.
+
+    Parametric Rz gates (the QAOA angles) are kept as-is.
+    """
     # Step 1: Transpile the circuit to use Clifford + Rz gates
     transpiled_circuit = transpile(circuit, basis_gates=["rz", "s", "sx", "cx", "h"])
 
@@ -287,6 +300,8 @@ def create_cost_hamiltonian_stim(G):
 
 
 def generate_qiskit_param_map(circuit):
+    """Map index in `circuit.parameters` (sorted by name) -> position of that parameter
+    in gate order, which is how the stim circuit indexes its parametrized gates."""
     dag = circuit_to_dag(circuit)
     param_list = [
         list(node.op.params[0].parameters)[0].name
@@ -306,6 +321,15 @@ def generate_qiskit_param_map(circuit):
 
 
 def relax_qaoa_parameters(circ):
+    """Give every parametric QAOA gate its own parameter.
+
+    A gate Rz(c * gamma[r]) becomes Rz(theta) with a fresh parameter named
+    "<c>*gamma_<i>" (beta likewise), so the Clifford search can pick a different
+    angle per gate. The original coefficient c survives only in the name and in
+    the returned multiplier map.
+
+    Returns (new_circuit, new_dag, angle_multipliers {name: c}).
+    """
     dag = circuit_to_dag(circ)
     gamma_counter, beta_counter = 0, 0
     angle_multipliers = {}

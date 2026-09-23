@@ -1,3 +1,8 @@
+"""Small numeric helpers (integer <-> base-n digit conversion).
+
+Vendored from the CAFQA / SPIQ code base (Bharadwaj et al., 2026,
+arXiv:2602.14327).
+"""
 import numpy as np
 
 

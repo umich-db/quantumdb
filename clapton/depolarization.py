@@ -1,3 +1,8 @@
+"""Depolarizing noise models for noisy Clifford search (spiq_initialization.py --err).
+
+Vendored from the CAFQA / SPIQ code base (Bharadwaj et al., 2026,
+arXiv:2602.14327).
+"""
 from __future__ import annotations
 # gate objects are ParametrizedClifford but cannot import as would cause cyclic import
 
@@ -28,6 +33,7 @@ class GateSpecificDepolarizationModel(DepolarizationModel):
 
 
 class GateGeneralDepolarizationModel(DepolarizationModel):
+    """Uniform depolarizing error: probability p1 on every 1-qubit gate, p2 on every 2-qubit gate."""
     def __init__(self, p1: float | None = None, p2: float | None = None):
         self.p1 = p1
         self.p2 = p2

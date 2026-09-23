@@ -1,3 +1,8 @@
+"""Genetic-algorithm search over Clifford angles (claptonize), evaluated with stim.
+
+Vendored from the CAFQA / SPIQ code base (Bharadwaj et al., 2026,
+arXiv:2602.14327).
+"""
 from __future__ import annotations
 import numpy as np
 import pygad
@@ -220,6 +225,15 @@ def claptonize(
     out_file: str = "",
     **optimizer_and_loss_kwargs,
 ):
+    """Search Clifford parameters minimising <H> = sum_i coeffs[i] * <paulis[i]> on `vqe_pcirc`.
+
+    Runs `n_starts` parallel genetic algorithms per round (pygad), mixing the best
+    populations between rounds; `budget` (via optimizer_and_loss_kwargs) is the
+    number of GA generations. `paulis` use qubit 0 as the first character.
+
+    Returns (x_best, energy_noisy, energy_ideal[, n_rounds], best_solutions,
+    best_fitness_vals), where x_best is the list of Clifford parameters k_i.
+    """
     sig_handler = SignalHandler()
 
     assert vqe_pcirc.num_physical_qubits == len(paulis[0])

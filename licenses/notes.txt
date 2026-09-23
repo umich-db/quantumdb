@@ -1,1 +1,0 @@
-License files (e.g., dwave.conf) should be placed here.

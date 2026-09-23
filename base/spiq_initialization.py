@@ -1,7 +1,25 @@
-#!/usr/bin/env python
-# coding: utf-8
+"""SPIQ initialization for join-ordering QAOA (paper §3.2).
 
-# Script to run SPIQ/CAFQA for generating a QAOA initial point by modelling the QUBO for join order optimization.
+Classical pre-pass that runs in its own environment (qiskit-aer / qiskit-algorithms
++ the vendored clapton package, see requirements-spiq.txt):
+
+  1. Build the join-ordering QUBO and its Ising Hamiltonian H_C.
+  2. Build the QAOA ansatz and "relax" it: every parametric rotation gets its own
+     parameter, so each gate can take a different Clifford angle.
+  3. Convert the circuit to stim and run clapton's genetic algorithm over
+     k_i in {0, 1, 2, 3} (angle k_i * pi/2), minimising <H_C> with efficient
+     Clifford simulation.
+  4. Map the best k-vector back to (a) per-gate angles for the relaxed circuit
+     `pcirc` (what IBMQExperiments.py --spiq_json uses) and (b) an averaged
+     2*reps-angle point for a stock QAOAAnsatz; verify (a) against stim with a
+     qiskit Statevector.
+
+Outputs (in --out_dir): spiq_initial_point_<stub>.json, spiq_pcirc_<stub>.qpy and
+spiq_trace_<stub>.txt, with <stub> = input<idx>_reps<p>_<R>rel_<P>pred.
+
+Usage (from base/):
+    python3 spiq_initialization.py --input_idx 0 --reps 2 --n_gens 200
+"""
 
 import os
 import re
@@ -10,10 +28,9 @@ import argparse
 import numpy as np
 
 import Scripts.ProblemGenerator as ProblemGenerator
-import Scripts.QUBOGenerator1 as QUBOGenerator1
+import Scripts.QUBOGenerator as QUBOGenerator
 from qiskit.circuit import ParameterExpression
 from qiskit.converters import circuit_to_dag
-from qiskit.algorithms import NumPyMinimumEigensolver
 from qiskit.algorithms import NumPyMinimumEigensolver
 
 try:
@@ -35,11 +52,14 @@ from clapton.depolarization import GateGeneralDepolarizationModel
 
 
 def _parse_rep_index(param_name: str) -> int:
+    """QAOA layer index encoded in a parameter name such as 'γ[1]' (first integer, default 0)."""
     m = re.search(r"(\d+)", param_name)
     return int(m.group(1)) if m else 0
 
 
 def _extract_true_multipliers(pcirc):
+    """Numerically evaluate each gate's ParameterExpression at param=1.0 to get the
+    multiplier actually applied at runtime, keyed by parameter name (1.0 after relaxation)."""
     dag = circuit_to_dag(pcirc)
     true_mults: dict[str, float] = {}
 
@@ -67,6 +87,11 @@ def _extract_true_multipliers(pcirc):
 
 
 def _build_relaxed_name_to_rep(pre_relax_circ):
+    """Map each relaxed parameter name ('<mult>*gamma_<i>' / '<mult>*beta_<i>') to its QAOA layer.
+
+    Walks gates in the same order as clapton.relax_qaoa_parameters so the generated
+    names match the ones it creates.
+    """
     dag = circuit_to_dag(pre_relax_circ)
 
     gamma_counter, beta_counter = 0, 0
@@ -99,17 +124,18 @@ def _build_relaxed_name_to_rep(pre_relax_circ):
 
 
 def build_problem(input_idx: int):
+    """Load problem folder <input_idx>_predicates and build its QUBO.
+
+    Returns (qubo, card, pred, pred_sel, penalty_weight).
+    """
     json_path = os.path.join(
         os.path.dirname(__file__),
         f"ExperimentalAnalysis/IBMQ/QPUPerformance/Problems/JSON/{input_idx}_predicates",
     )
 
-    card, pred, pred_sel = ProblemGenerator.get_join_ordering_problem(
-        json_path,
-        generated_problems=False,
-    )
+    card, pred, pred_sel = ProblemGenerator.get_join_ordering_problem(json_path)
 
-    qubo, penalty_weight = QUBOGenerator1.generate_IBMQ_QUBO_for_left_deep_trees_v2(
+    qubo, penalty_weight = QUBOGenerator.generate_IBMQ_QUBO_for_left_deep_trees_v2(
         card,
         pred,
         pred_sel,
@@ -119,11 +145,13 @@ def build_problem(input_idx: int):
 
 
 def create_QAOA_circuit(qubo, reps: int = 1):
+    """QAOAAnsatz for the Ising form of `qubo` (decomposed once)."""
     op, _ = qubo.to_ising()
     return QAOAAnsatz(op, reps=reps).decompose()
 
 
 def decompose_circuit(circuit, max_unchanged_repetitions=3):
+    """Decompose repeatedly until the depth stops changing `max_unchanged_repetitions` times in a row."""
     unchanged_counter = 0
 
     while unchanged_counter < max_unchanged_repetitions:
@@ -139,6 +167,12 @@ def decompose_circuit(circuit, max_unchanged_repetitions=3):
 
 
 def build_vanilla_spiq_objects(qubo, reps: int):
+    """Build everything the Clifford search needs from the QUBO.
+
+    Returns (op, ising_offset, qaoa_ansatz, pcirc_new, stim_circ, param_map,
+    angle_multipliers, name_to_rep) where pcirc_new is the relaxed per-gate
+    circuit and stim_circ its parametrized Clifford twin.
+    """
     op, ising_offset = qubo.to_ising()
 
     circuit = create_QAOA_circuit(qubo, reps=reps)
@@ -187,6 +221,12 @@ def _clifford_to_vanilla_initial_point(
     qaoa_ansatz,
     name_to_rep,
 ):
+    """Collapse per-gate Clifford angles into one (gamma, beta) pair per QAOA layer.
+
+    theta = (k*pi/2) / mult uses the *signed* original multiplier so the vanilla
+    Rz(mult*gamma) reproduces the chosen Clifford rotation; per-layer angles are
+    averaged. Returned in qaoa_ansatz.parameters order.
+    """
     ordered_names = [p.name for p in pcirc.parameters]
     vanilla_params = qaoa_ansatz.parameters
     reps = max(1, len(vanilla_params) // 2)
@@ -240,6 +280,20 @@ def run_spiq_initialization(
     err: float = None,
     out_file: str = None,
 ):
+    """Run the clapton Clifford-space GA and convert its best point into QAOA initial points.
+
+    Args:
+        qubo: join-ordering QuadraticProgram.
+        reps: QAOA depth p.
+        n_gens: GA generation budget (half is passed to claptonize as `budget`).
+        n_proc, n_starts, n_rounds: claptonize parallelism / restarts.
+        err: optional depolarizing error rate (p1=err, p2=10*err) for a noisy search.
+        out_file: trace file for the GA generations.
+
+    Returns:
+        dict with initial_point (2*reps angles), relaxed_initial_point (one angle per
+        pcirc gate), pcirc, energy_best (Ising scale), energy_best_qubo, ising_offset, ks_best_raw, ...
+    """
     (
         op,
         ising_offset,
@@ -253,6 +307,7 @@ def run_spiq_initialization(
 
     print("Length of stim_circ:", len(stim_circ.gates))
 
+    # clapton expects Pauli strings with qubit 0 first; qiskit labels are qubit 0 last.
     paulis = op.primitive.paulis.to_labels()
     coeffs = op.primitive.coeffs.real
     reversed_paulis = [p[::-1] for p in paulis]
@@ -322,6 +377,7 @@ def run_spiq_initialization(
 
     relaxed_param_names = [p.name for p in pcirc.parameters]
 
+    # Relaxed pcirc applies Rz(1.0 * theta), so theta_i = k_i * pi/2 exactly.
     relaxed_initial_point = []
     for i, name in enumerate(relaxed_param_names):
         applied_mult = applied_multipliers.get(name, 1.0)
@@ -334,6 +390,7 @@ def run_spiq_initialization(
             (int(ks_best[i]) * np.pi / 2.0) / applied_mult
         )
 
+    # Self-check: pcirc bound to relaxed_initial_point must reproduce stim's Clifford energy.
     try:
         from qiskit.quantum_info import Statevector
 
@@ -469,6 +526,7 @@ def evaluate_exact_ground_state_energy(qubo):
 
 
 def main():
+    """CLI entry point: run SPIQ for one problem and write JSON + QPY + trace outputs."""
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--input_idx", type=int, default=0, help="Problem index")

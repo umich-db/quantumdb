@@ -1,3 +1,8 @@
+"""Signal handling so multiprocessing workers of claptonize shut down cleanly.
+
+Vendored from the CAFQA / SPIQ code base (Bharadwaj et al., 2026,
+arXiv:2602.14327).
+"""
 import psutil
 import os
 import signal
