@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y \
         vim \
         python3.8 \
         python3-pip \
+        g++-10 \
         texlive-latex-base \
         texlive-science \
         texlive-fonts-recommended \
@@ -22,8 +23,11 @@ RUN apt-get update && apt-get install -y \
 		libudunits2-dev \
 		libproj15 \
 		libgdal-dev \
-        biber 
-		
+        biber
+
+# stim has no py3.8 aarch64 wheel; its source build needs C++20 (g++ >= 10).
+ENV CC=gcc-10 CXX=g++-10
+
 # Install R Packages
 RUN R -e "install.packages('ggplot2')"
 RUN R -e "install.packages('ggh4x')"
@@ -55,6 +59,11 @@ WORKDIR /home/repro/sigmod-repro
 # install python packages
 ENV PATH $PATH:/home/repro/.local/bin
 RUN pip3 install -r requirements.txt
+# aarch64: qiskit-aer's bundled libgomp fails to dlopen ("cannot allocate memory in static TLS block")
+# unless preloaded. Its filename carries a hash, so link it to a fixed path for LD_PRELOAD.
+RUN for f in /home/repro/.local/lib/python3.8/site-packages/qiskit_aer.libs/libgomp-*.so*; do \
+        [ -e "$f" ] && ln -sf "$f" /home/repro/.local/libgomp-aer.so; done; true
+ENV LD_PRELOAD=/home/repro/.local/libgomp-aer.so
 ENV PYTHONPATH=/home/repro/sigmod-repro:${PYTHONPATH}
 # The SPIQ pre-pass needs a separate environment: see requirements-spiq.txt.
 
