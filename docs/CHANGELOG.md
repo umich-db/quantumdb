@@ -5,29 +5,6 @@ See `RESULTS_INDEX.md` for which week folder holds which run.
 
 ---
 
-## 2026-09-30: Per-problem iteration windows; P3 random baseline on the QUBO scale
-
-**Files:** `graphs/multi-spiq.rmd`, `graphs/seeded-multi-spiq.rmd`, `RESULTS_INDEX.md`
-
-**What changed**
-- The plot calls use `max_iter` 200 for P1, 400 for P2 and 600 for P3.
-- `plot_energy_comparison` has a new `random_offset` argument, added to the
-  random-initialization energies. The P3 plots pass the Ising offset
-  25.799857…, so Week24 is drawn on the QUBO scale.
-
-**Why**
-- Each problem converges at a different point (P1 by about 100 iterations,
-  P2 by about 300, P3 by about 500), so one 1000-iteration window hid the early
-  behaviour of the smaller problems.
-- Week24 (20 qubits, P3) was logged on the Ising scale, before the offset fix,
-  so it plotted below the exact ground state. Verified by re-simulating its first
-  3 logged parameter sets with `QAOAAnsatz`: logged 4.820 / 2.188 / 0.071 vs
-  simulated Ising 4.892 / 2.056 / -0.043 (QUBO would be 30.69 / 27.86 / 25.76).
-- Week74 was suggested instead, but its only run (`Week74/Week84`) has 12-bit
-  bitstrings, so it is P2 (already P2's baseline), not P3.
-
----
-
 ## 2026-09-30: Optimal-ratio tables for the seeded multi-start runs
 
 **Files:** `graphs/seeded-multi-spiq.rmd`
@@ -55,28 +32,6 @@ problem 2, whose optimum is 315.
 | P3 | 0.121 | 0.126 |
 
 **Checks:** the whole file knits with `rmarkdown::render` without errors.
-
----
-
-## 2026-09-30: Plots follow the moved result folders; new seeded multi-start plots
-
-**Files:** `graphs/multi-spiq.rmd`, `graphs/seeded-multi-spiq.rmd` (new), `RESULTS_INDEX.md`
-
-**What changed**
-- The Week90–95 results were moved from `base/WeekNN` / `WeekNN` to
-  `outputs/multi-spiq/energy/WeekNN` / `outputs/multi-spiq/WeekNN`, matching the
-  other archived runs. `multi-spiq.rmd` now points at the new locations.
-- `seeded-multi-spiq.rmd` is a copy of `multi-spiq.rmd`'s setup and functions
-  (`plot_energy_comparison` gains a `multi_label` argument). It plots the seeded,
-  diverse multi-start runs (Week93–95) against the same random and
-  single-start SPIQ baselines.
-
-**Why:** the moved folders broke three paths in `multi-spiq.rmd`. The seeded
-runs needed their own plots, keeping `multi-spiq.rmd` as the record of the
-original multi-start runs.
-
-**Checks:** every referenced CSV exists, and all 6 plots from both files
-render in R.
 
 ---
 
@@ -123,33 +78,6 @@ render in R.
   worse Clifford point in another basin can win after optimisation.
 
 **Checks:** see "Verification" below.
-
----
-
-## 2026-09-25: Plot and results bookkeeping (`graphs/multi-spiq.rmd`, `RESULTS_INDEX.md`)
-
-**What changed**
-- `plot_energy_comparison` has an optional `file_multi` argument that adds a
-  multi-start curve.
-- `max_iter` (default 1000) cuts the plot at that iteration, and the y-axis
-  range is computed from that window.
-- Curves are thinner (`lwd` 0.5, points `cex` 0.15).
-- The legend is drawn in its own panel below the plot.
-- P2 and P3 plot chunks were added, and P1's reference energy is now the exact
-  value, 1.031.
-- `RESULTS_INDEX.md` maps every week folder to its problem, method, size and
-  minimum energy.
-
-**Why**
-- Multi-start results needed to be compared with random initialization and
-  single-start SPIQ on one graph.
-- The long flat tails after convergence hid the first iterations, where the
-  methods actually differ.
-- Thick lines and a legend drawn over the data made overlapping curves
-  unreadable.
-- The archived runs are all filed under `input0`, so the index was needed to
-  know which week belongs to which problem. It was built by fingerprinting
-  qubits, parameter count and energy range.
 
 ---
 
