@@ -1,0 +1,285 @@
+```{r setup, include=FALSE,echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(tibble.print_max = Inf)
+```
+
+```{r,echo=FALSE}
+library(tidyverse)
+library(glue)
+```
+```{r}
+cost_energy_boxplot_prob <- function(file_path, show_points = TRUE,targetCol="cost",thresh="()",opt="",fallback=FALSE,target) {
+  library(readr)
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  
+  lines <- readLines(file_path, warn = FALSE)
+  start_idx <- grep("^#\\s*all_solutions\\s*$", lines)
+
+  if (length(start_idx) == 0) {
+    stop("no # all_solution find")
+  }
+
+  all_lines <- lines[(start_idx + 1):length(lines)]
+  all_lines <- all_lines[all_lines != ""]
+
+  df <- read_csv(
+    I(paste(all_lines, collapse = "\n")),
+    show_col_types = FALSE
+  )
+
+  
+ ## df <- read_csv(file_path, show_col_types = FALSE, text = paste(all_lines, collapse = "\n"),
+## stringsAsFactors = FALSE)
+
+  if (!("probability" %in% names(df)) && ("prob" %in% names(df))) {
+    df <- df %>% rename(probability = prob)
+  }
+
+  df <- df %>%
+    transmute(
+      used_fallback=as.logical(used_fallback),
+      cost = as.numeric(.data[[targetCol]]),
+      energy = as.numeric(energy),
+      probability = as.numeric(probability)
+    ) %>%
+    filter(is.finite(energy), probability > 0,used_fallback == fallback)
+
+  w0 <- min(df$probability)
+  df_exp <- df %>%
+    mutate(w = pmax(1L, round(probability / w0))) %>%
+    uncount(w)
+
+  p <- ggplot(df_exp, aes(x = factor(cost), y = energy)) +
+    geom_boxplot() +
+    theme_bw() +
+    labs(x = targetCol, y = "Energy",
+         title = glue("Energy vs {targetCol}; thres: {thresh};opt:{opt}; used_fallback={fallback} "))
+
+  if (show_points) {
+    br <- sort(unique(df$probability))
+    p <- p +
+      geom_point(
+        data = df,
+        aes(size = probability),
+        alpha = 0.5,
+        position = position_jitter(width = 0.15, height = 0)
+      ) +
+      scale_size_continuous(breaks = br, labels = br, name = "probability")
+  }
+  cost_counts <- df %>%
+  count(cost, name = "n_rows") %>%
+  mutate(pct = n_rows / sum(n_rows)) %>%
+  arrange(cost)
+  print(glue("Matrix for used_fallback={fallback}"))
+  print(cost_counts)
+  print(p)
+
+return(list(
+  cost_counts[cost_counts$cost == target, ]$pct
+))  }
+
+```
+```{r}
+# function for plotting energies from two csvs (three with file_multi) in the
+# same graph along with a horizontal theoretical-energy reference line.
+# file_multi: winning run's energy_per_iteration_*.csv from an
+# IBMQExperiments.py --spiq_starts K run (the unsuffixed file, not _start{j}).
+# random_offset: added to the random-initialization energies; use the Ising
+# offset for runs logged on the Ising scale (before the QUBO-scale fix).
+# max_iter: only iterations <= max_iter are plotted (and used for the y range),
+# cutting the flat post-convergence tail; NULL plots everything.
+
+plot_energy_comparison <- function(
+    file_random,
+    file_spiq,
+    reference_energy,
+    file_multi = NULL,
+    max_iter = 1000,
+    random_offset = 0
+) {
+  
+  # Read CSVs
+  df_random <- read.csv(file_random)
+  df_spiq   <- read.csv(file_spiq)
+  df_multi  <- if (!is.null(file_multi)) read.csv(file_multi) else NULL
+  df_random$energy <- df_random$energy + random_offset
+  
+  # Sanity checks
+  required_cols <- c("iteration", "energy")
+  
+  if (!all(required_cols %in% colnames(df_random))) {
+    stop("Random file must contain 'iteration' and 'energy' columns")
+  }
+  
+  if (!all(required_cols %in% colnames(df_spiq))) {
+    stop("SPIQ file must contain 'iteration' and 'energy' columns")
+  }
+  
+  if (!is.null(df_multi) && !all(required_cols %in% colnames(df_multi))) {
+    stop("Multi-start file must contain 'iteration' and 'energy' columns")
+  }
+  
+  # Zoom into the first max_iter iterations
+  if (!is.null(max_iter)) {
+    df_random <- df_random[df_random$iteration <= max_iter, ]
+    df_spiq   <- df_spiq[df_spiq$iteration <= max_iter, ]
+    if (!is.null(df_multi)) df_multi <- df_multi[df_multi$iteration <= max_iter, ]
+  }
+  
+  # Combined x range
+  x_range <- range(
+    c(df_random$iteration, df_spiq$iteration, df_multi$iteration),
+    na.rm = TRUE
+  )
+  
+  # Combined y range INCLUDING reference line
+  y_range <- range(
+    c(
+      df_random$energy,
+      df_spiq$energy,
+      df_multi$energy,
+      reference_energy
+    ),
+    na.rm = TRUE
+  )
+  
+  # Padding
+  y_pad <- 0.05 * diff(y_range)
+  
+  if (y_pad == 0) {
+    y_pad <- 1
+  }
+  
+  y_range <- c(
+    y_range[1] - y_pad,
+    y_range[2] + y_pad
+  )
+  
+  # Two stacked panels: the plot on top, the legend in its own strip below,
+  # so the legend never overlaps the plot at any figure size
+  old_par <- par(no.readonly = TRUE)
+  on.exit(par(old_par))
+  layout(matrix(1:2, ncol = 1), heights = c(5, 1))
+  par(mar = c(4, 4, 4, 2) + 0.1)
+  
+  # Main plot
+  plot(
+    df_random$iteration,
+    df_random$energy,
+    type = "l",
+    col = "blue",
+    lwd = 0.5,
+    xlim = x_range,
+    ylim = y_range,
+    xlab = "Iteration",
+    ylab = "Energy",
+    main = "Energy vs Iteration (QAOA)"
+  )
+  
+  # SPIQ curve
+  lines(
+    df_spiq$iteration,
+    df_spiq$energy,
+    col = "red",
+    lwd = 0.5
+  )
+  
+  # Multi-start SPIQ curve
+  if (!is.null(df_multi)) {
+    lines(
+      df_multi$iteration,
+      df_multi$energy,
+      col = "purple",
+      lwd = 0.5
+    )
+    
+    points(
+      df_multi$iteration,
+      df_multi$energy,
+      col = "purple",
+      pch = 16,
+      cex = 0.15
+    )
+  }
+  
+  # Horizontal reference line
+  abline(
+    h = reference_energy,
+    col = "green3",
+    lwd = 1.5,
+    lty = 2   # dotted/dashed
+  )
+  
+  # Optional points
+  points(
+    df_random$iteration,
+    df_random$energy,
+    col = "blue",
+    pch = 16,
+    cex = 0.15
+  )
+  
+  points(
+    df_spiq$iteration,
+    df_spiq$energy,
+    col = "red",
+    pch = 16,
+    cex = 0.15
+  )
+  
+  # Grid
+  grid()
+  
+  # Legend panel (multi-start entry only when that curve is drawn)
+  par(mar = c(0, 0, 0, 0))
+  plot.new()
+  has_multi <- !is.null(df_multi)
+  legend(
+    "center",
+    ncol = 2,
+    legend = c(
+      "random initialization",
+      "spiq initialization",
+      if (has_multi) "multi-start spiq initialization",
+      "ground state energy"
+    ),
+    col = c("blue", "red", if (has_multi) "purple", "green3"),
+    lwd = c(1, 1, if (has_multi) 1, 1.5),
+    lty = c(1, 1, if (has_multi) 1, 2),
+    pch = c(16, 16, if (has_multi) 16, NA),
+    bty = "n"
+  )
+}
+```
+
+Problem 1: 3 relations
+```{r}
+# Energy comparison - 3 table problem 1
+plot_energy_comparison("/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/uninitialized/energy/Week71/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_10000/reps_2/COBYLA/input0/trial1/energy_per_iteration_10000_COBYLA_2_1.csv",
+                       "/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/multi-spiq/energy/Week90/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_10000/reps_2/COBYLA/input0/trial1/energy_per_iteration_10000_COBYLA_2_1.csv",
+                       reference_energy=1.031,
+                       max_iter=200)
+```
+
+Problem 2: 4 relations, 2 predicates (12 qubits)
+```{r}
+# Energy comparison - 4 table problem 2
+plot_energy_comparison("/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/uninitialized/energy/Week74/Week84/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_10000/reps_2/COBYLA/input0/trial1/energy_per_iteration_10000_COBYLA_2_1.csv",
+                       "/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/spiq/energy/Week88/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_10000/reps_2/COBYLA/input0/trial1/energy_per_iteration_10000_COBYLA_2_1.csv",
+                       reference_energy=4.766,
+                       file_multi="/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/multi-spiq/energy/Week91/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_10000/reps_2/COBYLA/input1/trial1/energy_per_iteration_10000_COBYLA_2_1.csv",
+                       max_iter=400)
+```
+
+Problem 3: 4 relations, 6 predicates (20 qubits)
+```{r}
+# Energy comparison - 4 table problem 3
+plot_energy_comparison("/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/uninitialized/energy/Week24/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_10000/reps_2/COBYLA/input0/trial1/energy_per_iteration_10000_COBYLA_2_1.csv",
+                       "/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/spiq/energy/Week60/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_10000/reps_2/COBYLA/input0/trial1/energy_per_iteration_10000_COBYLA_2_1.csv",
+                       reference_energy=2.725,
+                       file_multi="/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/multi-spiq/energy/Week92/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_10000/reps_2/COBYLA/input2/trial1/energy_per_iteration_10000_COBYLA_2_1.csv",
+                       max_iter=600,
+                       random_offset=25.799857164004695)
+```

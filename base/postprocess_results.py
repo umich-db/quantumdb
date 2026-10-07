@@ -3,7 +3,9 @@
 For each trial it
   1. re-simulates the QAOA state at selected optimizer evaluations (default:
      eval 1, the first iteration) from energy_per_iteration_*.csv and writes
-     readout_summary_eval<k>.csv,
+     readout_summary_eval<k>.csv. SPIQ runs are re-simulated on the relaxed
+     per-gate circuit (the pcirc.qpy that IBMQExperiments.py saves next to the CSV,
+     or --pcirc_qpy); random-initialization runs on the stock QAOAAnsatz,
   2. decodes the pickled final response into readout_summary.csv,
   3. prints the exact ground-state energy of the QUBO (the dashed line in Figs. 3–5).
 The readout CSVs carry both the raw and the fallback join order per bitstring;
@@ -24,6 +26,11 @@ from qiskit.algorithms import NumPyMinimumEigensolver
 from qiskit.circuit.library.n_local.qaoa_ansatz import QAOAAnsatz
 from qiskit.providers.aer import QasmSimulator
 from qiskit.utils import QuantumInstance
+
+try:
+    from qiskit import qpy
+except ImportError:  # older qiskit releases
+    from qiskit.circuit import qpy_serialization as qpy
 
 import Scripts.Postprocessing as Postprocessing
 import Scripts.ProblemGenerator as ProblemGenerator
@@ -53,13 +60,13 @@ def run_callback_parameter_simulation_and_postprocess(
     current_optim="COBYLA",
     iterations=10000,
     input_id=0,
-    eval_count=None
+    eval_count=None,
+    pcirc=None,
 ):
-    """Bind `parameters` into the vanilla QAOAAnsatz, sample it and write its readout CSV.
+    """Bind `parameters` into the ansatz, sample it and write its readout CSV.
 
-    Note: parameters are bound positionally into the 2*reps-angle QAOAAnsatz.
-    For SPIQ runs the logged parameters are per-gate angles of the relaxed
-    pcirc, so only the first 2*reps of them are used here.
+    `pcirc` is the relaxed per-gate SPIQ circuit; when it is None the parameters
+    are the 2*reps angles of the stock QAOAAnsatz (random-initialization runs).
     """
     if card_dict is None:
         card_dict = {}
@@ -69,7 +76,12 @@ def run_callback_parameter_simulation_and_postprocess(
 
     op, _ = qubo.to_ising()
 
-    ansatz = QAOAAnsatz(op, reps=reps).decompose()
+    ansatz = pcirc if pcirc is not None else QAOAAnsatz(op, reps=reps).decompose()
+    if len(parameters) != ansatz.num_parameters:
+        raise ValueError(
+            f"{len(parameters)} logged parameters but the ansatz has {ansatz.num_parameters}. "
+            "SPIQ runs need their pcirc (pcirc.qpy in the trial dir or --pcirc_qpy); "
+            "random-initialization runs must not have one.")
     param_map = {p: v for p, v in zip(ansatz.parameters, parameters)}
 
     qc = ansatz.assign_parameters(param_map, inplace=False)
@@ -239,6 +251,9 @@ def main():
     parser.add_argument("--iterations", type=int, default=10000, help="Iterations value used in result paths")
     parser.add_argument("--week", default="Week4", help="Results directory passed to IBMQExperiments.py --week")
     parser.add_argument("--evals", type=int, nargs="+", default=[1], help="Optimizer evaluations to re-simulate")
+    parser.add_argument("--pcirc_qpy", default=None,
+                        help="Relaxed SPIQ circuit for runs made before IBMQExperiments.py saved pcirc.qpy "
+                             "(e.g. spiq_init_outputs/spiq_pcirc_<stub>.qpy)")
     args = parser.parse_args()
 
     input_id, reps, current_optim, iterations = args.input_idx, args.reps, args.optimizer, args.iterations
@@ -258,6 +273,14 @@ def main():
             f'iterations_{iterations}/reps_{reps}/{current_optim}/input{input_id}/trial{trial}/'
             f'energy_per_iteration_{iterations}_{current_optim}_{reps}_{trial}.csv'
         )
+
+        # SPIQ runs: bind logged per-gate angles into the relaxed circuit they were optimised on.
+        pcirc_path = args.pcirc_qpy or os.path.join(os.path.dirname(energy_csv_path), "pcirc.qpy")
+        pcirc = None
+        if os.path.exists(pcirc_path):
+            with open(pcirc_path, "rb") as f:
+                pcirc = qpy.load(f)[0]
+            print(f"Re-simulating on SPIQ pcirc from {pcirc_path}")
 
         # eval_count 1 = first optimizer evaluation (the initial state for SPIQ runs).
         res_filtered = [item for item in convert_callback_csv_to_history(energy_csv_path)
@@ -280,7 +303,8 @@ def main():
             tag=reps,
             current_optim=current_optim,
             iterations=iterations,
-            input_id=input_id
+            input_id=input_id,
+            pcirc=pcirc,
         )
 
         Postprocessing.postprocess_qiskit_with_readout(

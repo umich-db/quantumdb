@@ -1,0 +1,405 @@
+```{r setup, include=FALSE,echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(tibble.print_max = Inf)
+```
+
+```{r,echo=FALSE}
+library(tidyverse)
+library(glue)
+```
+```{r}
+cost_energy_boxplot_prob <- function(file_path, show_points = TRUE,targetCol="cost",thresh="()",opt="",fallback=FALSE,target) {
+  library(readr)
+  library(dplyr)
+  library(tidyr)
+  library(ggplot2)
+  
+  lines <- readLines(file_path, warn = FALSE)
+  start_idx <- grep("^#\\s*all_solutions\\s*$", lines)
+
+  if (length(start_idx) == 0) {
+    stop("no # all_solution find")
+  }
+
+  all_lines <- lines[(start_idx + 1):length(lines)]
+  all_lines <- all_lines[all_lines != ""]
+
+  df <- read_csv(
+    I(paste(all_lines, collapse = "\n")),
+    show_col_types = FALSE
+  )
+
+  
+ ## df <- read_csv(file_path, show_col_types = FALSE, text = paste(all_lines, collapse = "\n"),
+## stringsAsFactors = FALSE)
+
+  if (!("probability" %in% names(df)) && ("prob" %in% names(df))) {
+    df <- df %>% rename(probability = prob)
+  }
+
+  df <- df %>%
+    transmute(
+      used_fallback=as.logical(used_fallback),
+      cost = as.numeric(.data[[targetCol]]),
+      energy = as.numeric(energy),
+      probability = as.numeric(probability)
+    ) %>%
+    filter(is.finite(energy), probability > 0,used_fallback == fallback)
+
+  w0 <- min(df$probability)
+  df_exp <- df %>%
+    mutate(w = pmax(1L, round(probability / w0))) %>%
+    uncount(w)
+
+  p <- ggplot(df_exp, aes(x = factor(cost), y = energy)) +
+    geom_boxplot() +
+    theme_bw() +
+    labs(x = targetCol, y = "Energy",
+         title = glue("Energy vs {targetCol}; thres: {thresh};opt:{opt}; used_fallback={fallback} "))
+
+  if (show_points) {
+    br <- sort(unique(df$probability))
+    p <- p +
+      geom_point(
+        data = df,
+        aes(size = probability),
+        alpha = 0.5,
+        position = position_jitter(width = 0.15, height = 0)
+      ) +
+      scale_size_continuous(breaks = br, labels = br, name = "probability")
+  }
+  cost_counts <- df %>%
+  count(cost, name = "n_rows") %>%
+  mutate(pct = n_rows / sum(n_rows)) %>%
+  arrange(cost)
+  print(glue("Matrix for used_fallback={fallback}"))
+  print(cost_counts)
+  print(p)
+
+return(list(
+  cost_counts[cost_counts$cost == target, ]$pct
+))  }
+
+```
+```{r}
+# function for plotting energies from two csvs (three with file_multi) in the
+# same graph along with a horizontal theoretical-energy reference line.
+# file_multi: winning run's energy_per_iteration_*.csv from an
+# IBMQExperiments.py --spiq_starts K run (the unsuffixed file, not _start{j}).
+# random_offset: added to the random-initialization energies; use the Ising
+# offset for runs logged on the Ising scale (before the QUBO-scale fix).
+# max_iter: only iterations <= max_iter are plotted (and used for the y range),
+# cutting the flat post-convergence tail; NULL plots everything.
+# multi_label: legend text for the file_multi curve.
+
+plot_energy_comparison <- function(
+    file_random,
+    file_spiq,
+    reference_energy,
+    file_multi = NULL,
+    max_iter = 1000,
+    random_offset = 0,
+    multi_label = "seeded multi-start spiq initialization"
+) {
+  
+  # Read CSVs
+  df_random <- read.csv(file_random)
+  df_spiq   <- read.csv(file_spiq)
+  df_multi  <- if (!is.null(file_multi)) read.csv(file_multi) else NULL
+  df_random$energy <- df_random$energy + random_offset
+  
+  # Sanity checks
+  required_cols <- c("iteration", "energy")
+  
+  if (!all(required_cols %in% colnames(df_random))) {
+    stop("Random file must contain 'iteration' and 'energy' columns")
+  }
+  
+  if (!all(required_cols %in% colnames(df_spiq))) {
+    stop("SPIQ file must contain 'iteration' and 'energy' columns")
+  }
+  
+  if (!is.null(df_multi) && !all(required_cols %in% colnames(df_multi))) {
+    stop("Multi-start file must contain 'iteration' and 'energy' columns")
+  }
+  
+  # Zoom into the first max_iter iterations
+  if (!is.null(max_iter)) {
+    df_random <- df_random[df_random$iteration <= max_iter, ]
+    df_spiq   <- df_spiq[df_spiq$iteration <= max_iter, ]
+    if (!is.null(df_multi)) df_multi <- df_multi[df_multi$iteration <= max_iter, ]
+  }
+  
+  # Combined x range
+  x_range <- range(
+    c(df_random$iteration, df_spiq$iteration, df_multi$iteration),
+    na.rm = TRUE
+  )
+  
+  # Combined y range INCLUDING reference line
+  y_range <- range(
+    c(
+      df_random$energy,
+      df_spiq$energy,
+      df_multi$energy,
+      reference_energy
+    ),
+    na.rm = TRUE
+  )
+  
+  # Padding
+  y_pad <- 0.05 * diff(y_range)
+  
+  if (y_pad == 0) {
+    y_pad <- 1
+  }
+  
+  y_range <- c(
+    y_range[1] - y_pad,
+    y_range[2] + y_pad
+  )
+  
+  # Two stacked panels: the plot on top, the legend in its own strip below,
+  # so the legend never overlaps the plot at any figure size
+  old_par <- par(no.readonly = TRUE)
+  on.exit(par(old_par))
+  layout(matrix(1:2, ncol = 1), heights = c(5, 1))
+  par(mar = c(4, 4, 4, 2) + 0.1)
+  
+  # Main plot
+  plot(
+    df_random$iteration,
+    df_random$energy,
+    type = "l",
+    col = "blue",
+    lwd = 0.5,
+    xlim = x_range,
+    ylim = y_range,
+    xlab = "Iteration",
+    ylab = "Energy",
+    main = "Energy vs Iteration (QAOA)"
+  )
+  
+  # SPIQ curve
+  lines(
+    df_spiq$iteration,
+    df_spiq$energy,
+    col = "red",
+    lwd = 0.5
+  )
+  
+  # Multi-start SPIQ curve
+  if (!is.null(df_multi)) {
+    lines(
+      df_multi$iteration,
+      df_multi$energy,
+      col = "purple",
+      lwd = 0.5
+    )
+    
+    points(
+      df_multi$iteration,
+      df_multi$energy,
+      col = "purple",
+      pch = 16,
+      cex = 0.15
+    )
+  }
+  
+  # Horizontal reference line
+  abline(
+    h = reference_energy,
+    col = "green3",
+    lwd = 1.5,
+    lty = 2   # dotted/dashed
+  )
+  
+  # Optional points
+  points(
+    df_random$iteration,
+    df_random$energy,
+    col = "blue",
+    pch = 16,
+    cex = 0.15
+  )
+  
+  points(
+    df_spiq$iteration,
+    df_spiq$energy,
+    col = "red",
+    pch = 16,
+    cex = 0.15
+  )
+  
+  # Grid
+  grid()
+  
+  # Legend panel (multi-start entry only when that curve is drawn)
+  par(mar = c(0, 0, 0, 0))
+  plot.new()
+  has_multi <- !is.null(df_multi)
+  legend(
+    "center",
+    ncol = 2,
+    legend = c(
+      "random initialization",
+      "spiq initialization",
+      if (has_multi) multi_label,
+      "ground state energy"
+    ),
+    col = c("blue", "red", if (has_multi) "purple", "green3"),
+    lwd = c(1, 1, if (has_multi) 1, 1.5),
+    lty = c(1, 1, if (has_multi) 1, 2),
+    pch = c(16, 16, if (has_multi) 16, NA),
+    bty = "n"
+  )
+}
+```
+
+Seeded diverse multi-start SPIQ (Week93-95): 8 independently seeded GAs
+(seed 0), a pool of every GA's elite plus per-generation bests, deduplicated by
+quantum state, energy window 0.25, max-min Hamming selection of 10 candidates,
+3 QAOA starts (COBYLA, 1000 iterations, reps 2). The purple curve is the winning
+start. The random and single-start SPIQ baselines are the same as in multi-spiq.rmd.
+See RESULTS_INDEX.md and CHANGELOG.md.
+
+Problem 1: 3 relations, 2 predicates (5 qubits)
+```{r}
+# Energy comparison - 3 table problem 1 (seeded multi-start: Week93)
+plot_energy_comparison("/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/uninitialized/energy/Week71/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_10000/reps_2/COBYLA/input0/trial1/energy_per_iteration_10000_COBYLA_2_1.csv",
+                       "/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/multi-spiq/energy/Week90/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_10000/reps_2/COBYLA/input0/trial1/energy_per_iteration_10000_COBYLA_2_1.csv",
+                       reference_energy=1.031,
+                       file_multi="/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/multi-spiq/energy/Week93/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_1000/reps_2/COBYLA/input0/trial1/energy_per_iteration_1000_COBYLA_2_1.csv",
+                       max_iter=200)
+```
+
+Problem 2: 4 relations, 2 predicates (12 qubits)
+```{r}
+# Energy comparison - 4 table problem 2 (seeded multi-start: Week94)
+plot_energy_comparison("/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/uninitialized/energy/Week74/Week84/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_10000/reps_2/COBYLA/input0/trial1/energy_per_iteration_10000_COBYLA_2_1.csv",
+                       "/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/spiq/energy/Week88/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_10000/reps_2/COBYLA/input0/trial1/energy_per_iteration_10000_COBYLA_2_1.csv",
+                       reference_energy=4.766,
+                       file_multi="/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/multi-spiq/energy/Week94/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_1000/reps_2/COBYLA/input1/trial1/energy_per_iteration_1000_COBYLA_2_1.csv",
+                       max_iter=400)
+```
+
+Problem 3: 4 relations, 6 predicates (20 qubits)
+```{r}
+# Energy comparison - 4 table problem 3 (seeded multi-start: Week95)
+plot_energy_comparison("/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/uninitialized/energy/Week24/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_10000/reps_2/COBYLA/input0/trial1/energy_per_iteration_10000_COBYLA_2_1.csv",
+                       "/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/spiq/energy/Week60/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_10000/reps_2/COBYLA/input0/trial1/energy_per_iteration_10000_COBYLA_2_1.csv",
+                       reference_energy=2.725,
+                       file_multi="/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/multi-spiq/energy/Week95/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_1000/reps_2/COBYLA/input2/trial1/energy_per_iteration_1000_COBYLA_2_1.csv",
+                       max_iter=600,
+                       random_offset=25.799857164004695)
+```
+
+
+## Optimal vs valid (raw decoding vs fallback) ratios: seeded multi-start
+
+Each sampled bitstring is decoded twice. `used_fallback = FALSE` is the raw join
+order; `used_fallback = TRUE` is the order after the fallback repair. For each run,
+`cost_energy_boxplot_prob` prints the cost distribution for one decoding and
+returns the share of samples at the optimal cost (`target`). The optimal costs were
+brute-forced over every left-deep order with
+`Scripts/Postprocessing.get_costs_for_leftdeep_tree`: P1 = 15, P2 = 315, P3 = 39.
+"Final" is the re-sampled best state (`trial_1/readout_summary.csv`). "First
+iteration" is evaluation 1 of the winning start (`readout_summary_eval1.csv`), i.e.
+the SPIQ starting point.
+
+```{r}
+# Collects the optimal ratio of every boxplot below for the summary table
+ratio_rows <- list()
+record_ratio <- function(problem, stage, fallback, res, target) {
+  pct <- unlist(res)
+  ratio_rows[[length(ratio_rows) + 1]] <<- data.frame(
+    problem = problem, stage = stage, used_fallback = fallback, optimal_cost = target,
+    optimal_ratio = if (length(pct) == 0) 0 else pct[1]
+  )
+}
+```
+
+3 table problem 1 (seeded multi-start SPIQ, Week93) - final
+```{r}
+# Final QAOA seeded multi-start SPIQ; 3 table - problem1, trial1 (Week93); optimal cost 15
+
+res <- cost_energy_boxplot_prob(glue("/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/multi-spiq/Week93/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_1000/reps_2/COBYLA/trial_1/readout_summary.csv"),targetCol="cost",thresh=150,opt="COBYLA",fallback = FALSE, target=15)
+    record_ratio("P1", "final", FALSE, res, 15)
+    print(glue("optimizer:COBYLA; input thres:150; costType:cost; optimal ratio (raw) = {round(unlist(res)[1], 4)}"))
+
+res <- cost_energy_boxplot_prob(glue("/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/multi-spiq/Week93/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_1000/reps_2/COBYLA/trial_1/readout_summary.csv"),targetCol="cost",thresh=150,opt="COBYLA",fallback = TRUE, target=15)
+    record_ratio("P1", "final", TRUE, res, 15)
+    print(glue("optimizer:COBYLA; input thres:150; costType:cost; optimal ratio (fallback) = {round(unlist(res)[1], 4)}"))
+```
+
+3 table problem 1 (seeded multi-start SPIQ, Week93) - first iteration
+```{r}
+# First iteration QAOA seeded multi-start SPIQ; 3 table - problem1, trial1 (Week93); optimal cost 15
+
+res <- cost_energy_boxplot_prob(glue("/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/multi-spiq/Week93/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_1000/reps_2/COBYLA/input0/trial1/readout_summary_eval1.csv"),targetCol="cost",thresh=150,opt="COBYLA",fallback = FALSE, target=15)
+    record_ratio("P1", "first iteration", FALSE, res, 15)
+    print(glue("optimizer:COBYLA; input thres:150; costType:cost; optimal ratio (raw) = {round(unlist(res)[1], 4)}"))
+
+res <- cost_energy_boxplot_prob(glue("/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/multi-spiq/Week93/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_1000/reps_2/COBYLA/input0/trial1/readout_summary_eval1.csv"),targetCol="cost",thresh=150,opt="COBYLA",fallback = TRUE, target=15)
+    record_ratio("P1", "first iteration", TRUE, res, 15)
+    print(glue("optimizer:COBYLA; input thres:150; costType:cost; optimal ratio (fallback) = {round(unlist(res)[1], 4)}"))
+```
+
+4 table problem 2 (seeded multi-start SPIQ, Week94) - final
+```{r}
+# Final QAOA seeded multi-start SPIQ; 4 table - problem2, trial1 (Week94); optimal cost 315
+
+res <- cost_energy_boxplot_prob(glue("/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/multi-spiq/Week94/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_1000/reps_2/COBYLA/trial_1/readout_summary.csv"),targetCol="cost",thresh=150,opt="COBYLA",fallback = FALSE, target=315)
+    record_ratio("P2", "final", FALSE, res, 315)
+    print(glue("optimizer:COBYLA; input thres:150; costType:cost; optimal ratio (raw) = {round(unlist(res)[1], 4)}"))
+
+res <- cost_energy_boxplot_prob(glue("/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/multi-spiq/Week94/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_1000/reps_2/COBYLA/trial_1/readout_summary.csv"),targetCol="cost",thresh=150,opt="COBYLA",fallback = TRUE, target=315)
+    record_ratio("P2", "final", TRUE, res, 315)
+    print(glue("optimizer:COBYLA; input thres:150; costType:cost; optimal ratio (fallback) = {round(unlist(res)[1], 4)}"))
+```
+
+4 table problem 2 (seeded multi-start SPIQ, Week94) - first iteration
+```{r}
+# First iteration QAOA seeded multi-start SPIQ; 4 table - problem2, trial1 (Week94); optimal cost 315
+
+res <- cost_energy_boxplot_prob(glue("/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/multi-spiq/Week94/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_1000/reps_2/COBYLA/input1/trial1/readout_summary_eval1.csv"),targetCol="cost",thresh=150,opt="COBYLA",fallback = FALSE, target=315)
+    record_ratio("P2", "first iteration", FALSE, res, 315)
+    print(glue("optimizer:COBYLA; input thres:150; costType:cost; optimal ratio (raw) = {round(unlist(res)[1], 4)}"))
+
+res <- cost_energy_boxplot_prob(glue("/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/multi-spiq/Week94/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_1000/reps_2/COBYLA/input1/trial1/readout_summary_eval1.csv"),targetCol="cost",thresh=150,opt="COBYLA",fallback = TRUE, target=315)
+    record_ratio("P2", "first iteration", TRUE, res, 315)
+    print(glue("optimizer:COBYLA; input thres:150; costType:cost; optimal ratio (fallback) = {round(unlist(res)[1], 4)}"))
+```
+
+4 table problem 3 (seeded multi-start SPIQ, Week95) - final
+```{r}
+# Final QAOA seeded multi-start SPIQ; 4 table - problem3, trial1 (Week95); optimal cost 39
+
+res <- cost_energy_boxplot_prob(glue("/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/multi-spiq/Week95/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_1000/reps_2/COBYLA/trial_1/readout_summary.csv"),targetCol="cost",thresh=150,opt="COBYLA",fallback = FALSE, target=39)
+    record_ratio("P3", "final", FALSE, res, 39)
+    print(glue("optimizer:COBYLA; input thres:150; costType:cost; optimal ratio (raw) = {round(unlist(res)[1], 4)}"))
+
+res <- cost_energy_boxplot_prob(glue("/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/multi-spiq/Week95/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_1000/reps_2/COBYLA/trial_1/readout_summary.csv"),targetCol="cost",thresh=150,opt="COBYLA",fallback = TRUE, target=39)
+    record_ratio("P3", "final", TRUE, res, 39)
+    print(glue("optimizer:COBYLA; input thres:150; costType:cost; optimal ratio (fallback) = {round(unlist(res)[1], 4)}"))
+```
+
+4 table problem 3 (seeded multi-start SPIQ, Week95) - first iteration
+```{r}
+# First iteration QAOA seeded multi-start SPIQ; 4 table - problem3, trial1 (Week95); optimal cost 39
+
+res <- cost_energy_boxplot_prob(glue("/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/multi-spiq/Week95/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_1000/reps_2/COBYLA/input2/trial1/readout_summary_eval1.csv"),targetCol="cost",thresh=150,opt="COBYLA",fallback = FALSE, target=39)
+    record_ratio("P3", "first iteration", FALSE, res, 39)
+    print(glue("optimizer:COBYLA; input thres:150; costType:cost; optimal ratio (raw) = {round(unlist(res)[1], 4)}"))
+
+res <- cost_energy_boxplot_prob(glue("/Users/divyashekar/Documents/Sem3/QuantumDB/sigmod23-reproduction/outputs/multi-spiq/Week95/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_1000/reps_2/COBYLA/input2/trial1/readout_summary_eval1.csv"),targetCol="cost",thresh=150,opt="COBYLA",fallback = TRUE, target=39)
+    record_ratio("P3", "first iteration", TRUE, res, 39)
+    print(glue("optimizer:COBYLA; input thres:150; costType:cost; optimal ratio (fallback) = {round(unlist(res)[1], 4)}"))
+```
+
+Summary: optimal ratio per problem, stage and decoding
+```{r}
+ratio_summary <- do.call(rbind, ratio_rows)
+knitr::kable(ratio_summary, digits = 4,
+             caption = "Seeded multi-start SPIQ (Week93-95): share of samples at the optimal join-order cost")
+```

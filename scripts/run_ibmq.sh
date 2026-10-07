@@ -16,7 +16,7 @@ for opt in 1; do          # 1 = COBYLA
     spiq_json="${SPIQ_DIR}/spiq_initial_point_input${SPIQ_INPUT_IDX}_reps${reps}.json"
     if [ ! -f "${spiq_json}" ]; then
       echo "SPIQ init file missing: ${spiq_json}" >&2
-      echo "Regenerate with: python3 spiq_initialization.py --input_idx ${SPIQ_INPUT_IDX} --reps ${reps} --n_gens 200" >&2
+      echo "Regenerate with: python3 spiq_initialization.py --input_idx ${SPIQ_INPUT_IDX} --reps ${reps} --n_gens 200 --n_candidates 5" >&2
       exit 1
     fi
 
@@ -27,6 +27,7 @@ for opt in 1; do          # 1 = COBYLA
         --reps "${reps}" \
         --optimizer "${opt}" \
         --spiq_json "${spiq_json}" \
+        --spiq_starts 5 \
         --input_idx "${SPIQ_INPUT_IDX}" \
         >> "ibmq_experiment_opt${opt}_reps${reps}_trial${trial}.log" 2>&1
     done

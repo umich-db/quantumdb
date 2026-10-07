@@ -106,20 +106,32 @@ python3 base/postprocess_results.py --trial 1 --reps 2 --input_idx 0 --week Week
 * `--input_idx`: problem folder `<idx>_predicates` (0=P1, 1=P2, 2=P3).
 * `--reps`: QAOA depth p (2 in the paper).
 * `--n_gens`: GA generation budget. `claptonize` receives `n_gens // 2`.
-* `--n_proc`, `--n_starts`, `--n_rounds`: parallelism and restarts. `--err`: optional depolarizing noise during the search.
+* `--n_proc`, `--n_rounds`: parallelism and restarts. `--err`: optional depolarizing noise during the search.
+* `--n_starts`: number of independent parallel GA searches. Each one explores its
+  own region; use 8 or more for multi-start. `n_proc` is split across them.
+* `--seed`: base GA seed (default 0). Parallel GA `m` uses `seed + m`.
+* `--n_candidates`: number of spread-out Clifford points exported as QAOA starts
+  (default 1, the single best point).
+* `--energy_window`: multi-start candidates must satisfy
+  `E ≤ E_best + energy_window·|E_best|` (Ising scale, default 0.25).
 
 ### `IBMQExperiments.py` flags
 * `--trial`: trial id, used in result paths.
 * `--reps`: QAOA depth p.
 * `--optimizer`: 0 = AQGD, 1 = COBYLA (paper), 2 = SPSA.
 * `--spiq_json`: turns on SPIQ mode.
+* `--spiq_starts`: multi-start SPIQ. Optimise from the K best distinct SPIQ points, each with the full `--iterations`, and keep the run with the lowest energy (default 1).
 * `--week`: top-level results directory.
 * `--input_idx`: problem folder (0=P1, 1=P2, 2=P3).
 * `--iterations`: max optimizer iterations (default 10000).
 
 ### `postprocess_results.py` flags
 `--trial` (one or more), `--reps`, `--optimizer`, `--input_idx`,
-`--iterations`, `--week`, `--evals` (evaluations to re-simulate, default `1`).
+`--iterations`, `--week`, `--evals` (evaluations to re-simulate, default `1`),
+`--pcirc_qpy`. SPIQ evaluations are re-simulated on the relaxed circuit.
+`IBMQExperiments.py` saves that circuit as `pcirc.qpy` in the trial directory,
+and postprocessing loads it from there. For runs made before that, pass the
+original `spiq_pcirc_<stub>.qpy` with `--pcirc_qpy`.
 
 ---
 
@@ -148,6 +160,15 @@ The script therefore produces two initial points:
 * **`relaxed_initial_point`**: one `θ_i = k_i·π/2` per gate of `pcirc`.
   `IBMQExperiments.py --spiq_json` uses this one.
 * **`initial_point`**: `2·reps` angles for a stock `QAOAAnsatz`, averaged per layer.
+* **`relaxed_initial_points`** / **`candidate_energies`** / **`candidate_ks`**: the
+  multi-start set. Index 0 is always the global best (`relaxed_initial_point`).
+  The rest are picked from a pool of every GA's elite and per-generation best
+  points. Points preparing the same quantum state (same stim canonical
+  stabilizers) are merged, and anything outside `--energy_window` is dropped.
+  The remaining points are chosen greedily to maximise the minimum Hamming
+  distance in `k` to those already picked. `candidate_min_hamming`,
+  `candidate_source_ga`, `pool_size` and `pool_distinct_states` record how
+  spread out the set is.
 
 **Built-in checks.** `spiq_initialization.py` binds `relaxed_initial_point`
 into `pcirc` and compares the qiskit `Statevector` energy with stim's
@@ -171,7 +192,10 @@ offset vs `energy_best`, tolerance 0.25) before optimising.
   over `2·reps` angles, all starting at 0.5. A callback logs every evaluation.
 * **`solve_with_QAOA_spiq`** (SPIQ): loads `pcirc` from QPY. COBYLA then
   optimises all per-gate angles, starting from `relaxed_initial_point` and
-  minimising `Σ_x p(x)·qubo.objective(x)` over 10 240 shots.
+  minimising `Σ_x p(x)·qubo.objective(x)` over 10 240 shots. With
+  `--spiq_starts K` this runs once per SPIQ candidate and logs each run to
+  `energy_per_iteration_…_start{j}.csv`. The winner's log is copied to the
+  unsuffixed CSV, and its readout and pickle are saved.
 
 Both solvers log energies on the **QUBO scale** (Ising expectation + offset).
 Both return `(response, final_point, used_eval, min_state_buffer)`. At the

@@ -26,6 +26,7 @@ import re
 import json
 import argparse
 import numpy as np
+import stim
 
 import Scripts.ProblemGenerator as ProblemGenerator
 import Scripts.QUBOGenerator as QUBOGenerator
@@ -47,7 +48,7 @@ from clapton.circuit_manipulation import (
     relax_qaoa_parameters,
     transform_to_allowed_gates,
 )
-from clapton.clapton import claptonize
+from clapton.clapton import claptonize, loss_func
 from clapton.depolarization import GateGeneralDepolarizationModel
 
 
@@ -270,6 +271,50 @@ def _clifford_to_vanilla_initial_point(
     return initial_point
 
 
+def _ks_to_relaxed_point(ks, relaxed_param_names, applied_multipliers):
+    """Per-gate angles for the relaxed pcirc: theta_i = (k_i * pi/2) / applied multiplier."""
+    point = []
+    for i, name in enumerate(relaxed_param_names):
+        applied_mult = applied_multipliers.get(name, 1.0)
+        point.append(0.0 if applied_mult == 0 else (int(ks[i]) * np.pi / 2.0) / applied_mult)
+    return point
+
+
+def _hamming(a, b):
+    """Number of gates whose Clifford angle k_i differs between two k-vectors."""
+    return sum(x != y for x, y in zip(a, b))
+
+
+def _select_diverse(cands, n, energy_window):
+    """Pick up to n spread-out multi-start points from scored Clifford candidates.
+
+    cands: dicts with ks (k-vector), src (GA id), energy (Ising), state (canonical
+    stabilizer key). The first dict is the global best and is always returned first.
+      1. keep one k-vector per distinct quantum state (the lowest-energy one), so
+         different k-vectors that prepare the same state do not waste a start;
+      2. keep states with energy <= E_best + energy_window * |E_best|;
+      3. greedy max-min: repeatedly add the state whose smallest Hamming distance
+         to the already-picked ones is largest (ties -> lower energy).
+    Returns (picked, n_distinct_states, n_in_window); each picked dict gains
+    min_hamming (None for the first pick).
+    """
+    by_state = {}
+    for c in sorted(cands, key=lambda c: c["energy"]):  # stable: the best stays first on ties
+        by_state.setdefault(c["state"], c)
+    states = list(by_state.values())
+    e_best = states[0]["energy"]
+    window = [c for c in states if c["energy"] <= e_best + energy_window * abs(e_best)]
+
+    picked = [dict(window[0], min_hamming=None)]
+    rest = window[1:]
+    while rest and len(picked) < n:
+        dist = {id(c): min(_hamming(c["ks"], p["ks"]) for p in picked) for c in rest}
+        nxt = max(rest, key=lambda c: (dist[id(c)], -c["energy"]))
+        picked.append(dict(nxt, min_hamming=dist[id(nxt)]))
+        rest.remove(nxt)
+    return picked, len(states), len(window)
+
+
 def run_spiq_initialization(
     qubo,
     reps: int,
@@ -279,6 +324,9 @@ def run_spiq_initialization(
     n_rounds: int = 1,
     err: float = None,
     out_file: str = None,
+    n_candidates: int = 1,
+    energy_window: float = 0.25,
+    seed: int = 0,
 ):
     """Run the clapton Clifford-space GA and convert its best point into QAOA initial points.
 
@@ -289,6 +337,10 @@ def run_spiq_initialization(
         n_proc, n_starts, n_rounds: claptonize parallelism / restarts.
         err: optional depolarizing error rate (p1=err, p2=10*err) for a noisy search.
         out_file: trace file for the GA generations.
+        n_candidates: how many spread-out Clifford points to export as QAOA starts
+            (see _select_diverse).
+        energy_window: candidates must satisfy E <= E_best + energy_window * |E_best|.
+        seed: base seed; parallel GA m uses seed + m.
 
     Returns:
         dict with initial_point (2*reps angles), relaxed_initial_point (one angle per
@@ -322,6 +374,8 @@ def run_spiq_initialization(
         energy_best,
         best_cafqa_gen_params,
         best_cafqa_gen_fitness,
+        pool_xs,
+        pool_src,
     ) = claptonize(
         reversed_paulis,
         coeffs,
@@ -332,6 +386,7 @@ def run_spiq_initialization(
         callback=None,
         budget=n_gens // 2,
         out_file=out_file,
+        seed=seed,
     )
 
     stim_circ.assign(ks_best)
@@ -378,17 +433,53 @@ def run_spiq_initialization(
     relaxed_param_names = [p.name for p in pcirc.parameters]
 
     # Relaxed pcirc applies Rz(1.0 * theta), so theta_i = k_i * pi/2 exactly.
-    relaxed_initial_point = []
-    for i, name in enumerate(relaxed_param_names):
-        applied_mult = applied_multipliers.get(name, 1.0)
+    relaxed_initial_point = _ks_to_relaxed_point(ks_best, relaxed_param_names, applied_multipliers)
 
-        if applied_mult == 0:
-            relaxed_initial_point.append(0.0)
-            continue
+    # Multi-start set: the global best first, then spread-out points from the
+    # pool of every GA's elite and per-generation bests (see _select_diverse).
+    def _score(ks, src):
+        # Ising energy exactly as claptonize scores x_best; loss_func also leaves
+        # the noiseless stim snapshot of `ks` behind, which identifies its state.
+        energy = float(loss_func(ks, reversed_paulis, coeffs, stim_circ, return_sublosses=True)[2])
+        sim = stim.TableauSimulator()
+        sim.do(stim_circ.circ_snapshot_noiseless)
+        state = tuple(str(g) for g in sim.canonical_stabilizers())
+        return {"ks": ks, "src": src, "energy": energy, "state": state}
 
-        relaxed_initial_point.append(
-            (int(ks_best[i]) * np.pi / 2.0) / applied_mult
-        )
+    best_key = tuple(int(k) for k in ks_best)
+    pool = {best_key: None}  # k-vector -> first source GA; the global best goes first
+    for x, src in zip(pool_xs, pool_src):
+        key = tuple(int(v) for v in x)
+        if pool.get(key) is None:
+            pool[key] = int(src)
+
+    if n_candidates <= 1:
+        picked = [{"ks": list(best_key), "src": pool[best_key], "energy": energy_best_ising, "min_hamming": None}]
+        n_states = n_window = None
+    else:
+        picked, n_states, n_window = _select_diverse(
+            [_score(list(key), src) for key, src in pool.items()], n_candidates, energy_window)
+    stim_circ.assign(ks_best)
+
+    candidate_ks = [c["ks"] for c in picked]
+    candidate_energies = [c["energy"] for c in picked]
+    relaxed_initial_points = [
+        [float(v) for v in _ks_to_relaxed_point(ks, relaxed_param_names, applied_multipliers)]
+        for ks in candidate_ks
+    ]
+    diversity = {
+        "pool_size": len(pool),
+        "pool_distinct_states": n_states,
+        "pool_in_energy_window": n_window,
+        "candidate_min_hamming": [c["min_hamming"] for c in picked],
+        "candidate_source_ga": [c["src"] for c in picked],
+    }
+    print(
+        f"[multi-start] {len(candidate_ks)} SPIQ candidates from a pool of {len(pool)} k-vectors "
+        f"({n_states} distinct states, {n_window} within the energy window); "
+        f"Ising energies: {candidate_energies}; min Hamming to earlier picks: "
+        f"{diversity['candidate_min_hamming']}; source GAs: {diversity['candidate_source_ga']}"
+    )
 
     # Self-check: pcirc bound to relaxed_initial_point must reproduce stim's Clifford energy.
     try:
@@ -494,6 +585,10 @@ def run_spiq_initialization(
             else float(best_cafqa_gen_fitness)
         ),
         "ks_best_raw": [int(k) for k in ks_best],
+        "relaxed_initial_points": relaxed_initial_points,
+        "candidate_energies": candidate_energies,
+        "candidate_ks": candidate_ks,
+        **diversity,
     }
 
 
@@ -533,9 +628,14 @@ def main():
     parser.add_argument("--reps", type=int, default=1, help="QAOA reps / p")
     parser.add_argument("--n_gens", type=int, default=200, help="SPIQ generation budget")
     parser.add_argument("--n_proc", type=int, default=32, help="Number of processes for SPIQ")
-    parser.add_argument("--n_starts", type=int, default=4, help="Number of SPIQ starts")
+    parser.add_argument("--n_starts", type=int, default=4,
+                        help="Number of independent parallel GA searches (each explores its own region)")
     parser.add_argument("--n_rounds", type=int, default=1, help="Number of SPIQ rounds")
     parser.add_argument("--err", type=float, default=None, help="Optional depolarization error")
+    parser.add_argument("--n_candidates", type=int, default=1, help="Spread-out SPIQ points to export as QAOA starts")
+    parser.add_argument("--energy_window", type=float, default=0.25,
+                        help="Multi-start candidates must have E <= E_best + energy_window*|E_best| (Ising)")
+    parser.add_argument("--seed", type=int, default=0, help="Base GA seed; parallel GA m uses seed + m")
 
     parser.add_argument(
         "--out_dir",
@@ -571,6 +671,9 @@ def main():
         n_rounds=args.n_rounds,
         err=args.err,
         out_file=out_file,
+        n_candidates=args.n_candidates,
+        energy_window=args.energy_window,
+        seed=args.seed,
     )
 
     json_out = os.path.join(
@@ -619,6 +722,15 @@ def main():
         "noisy_energy_best": result["noisy_energy_best"],
         "best_cafqa_gen_fitness": result["best_cafqa_gen_fitness"],
         "ks_best_raw": result["ks_best_raw"],
+        # Multi-start set (index 0 == relaxed_initial_point), best first then spread-out picks.
+        "relaxed_initial_points": result["relaxed_initial_points"],
+        "candidate_energies": result["candidate_energies"],
+        "candidate_ks": result["candidate_ks"],
+        "seed": args.seed,
+        "n_starts": args.n_starts,
+        "energy_window": args.energy_window,
+        **{k: result[k] for k in ("pool_size", "pool_distinct_states", "pool_in_energy_window",
+                                  "candidate_min_hamming", "candidate_source_ga")},
         "spiq_trace_file": out_file,
         "exact_ground_state": exact_ground_state,
     }

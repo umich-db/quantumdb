@@ -6,8 +6,10 @@ with QAOA in one of two modes:
 * Random / uninformed initialization (no --spiq_json): stock qiskit `QAOA`
   over the 2*reps angles (gamma, beta), started from a fixed point.
 * SPIQ initialization (--spiq_json <file>): loads the relaxed per-gate
-  circuit `pcirc` and the Clifford initial point written by
+  circuit `pcirc` and the Clifford initial point(s) written by
   spiq_initialization.py, and optimises every per-gate angle directly.
+  With --spiq_starts K it runs the optimizer from each of the K best distinct
+  SPIQ points (full --iterations each) and keeps the lowest-energy run.
 
 Both modes log the energy of every optimizer evaluation (QUBO scale, i.e.
 directly comparable with qubo.objective.evaluate(x)) to
@@ -16,7 +18,7 @@ parameters seen and store the samples as min_state_readout.csv plus a pickled
 response that postprocess_results.py decodes into join orders (Table 1).
 
 Usage (from base/):
-    python3 IBMQExperiments.py --trial 1 --reps 2 --optimizer 1 [--spiq_json <json>] [--week Week84]
+    python3 IBMQExperiments.py --trial 1 --reps 2 --optimizer 1 [--spiq_json <json> --spiq_starts 5] [--week Week84]
 """
 
 import argparse
@@ -25,6 +27,7 @@ import json
 import os
 import pathlib
 import pickle
+import shutil
 import sys
 from types import SimpleNamespace
 
@@ -61,6 +64,8 @@ parser.add_argument(
         "instead of the vanilla QAOAAnsatz."
     ),
 )
+parser.add_argument("--spiq_starts", type=int, default=1,
+                    help="Number of SPIQ candidate points to optimise from (multi-start); best run is kept")
 parser.add_argument("--week", type=str, default="Week84", help="Top-level results directory (relative to base/)")
 parser.add_argument("--iterations", type=int, default=10000, help="Optimizer max iterations")
 parser.add_argument("--input_idx", type=int, default=0, help="Problem folder <idx>_predicates: 0=P1, 1=P2, 2=P3")
@@ -125,7 +130,9 @@ def _make_spiq_response(x, fval, samples):
 def _load_spiq_initialization(json_path):
     """
     Load the JSON + QPY artifacts produced by spiq_initialization.py.
-    Returns (pcirc, relaxed_initial_point, spiq_meta).
+    Returns (pcirc, relaxed_initial_points, expected_energies, spiq_meta), with
+    at most --spiq_starts points. JSONs written before multi-start support
+    only carry the single best point and yield a one-element list.
 
     The `pcirc_qpy` field in the JSON may be a relative path. We resolve
     it in this order:
@@ -156,7 +163,9 @@ def _load_spiq_initialization(json_path):
 
     with open(qpy_path, "rb") as f:
         pcirc = qpy.load(f)[0]
-    return pcirc, list(meta["relaxed_initial_point"]), meta
+    points = meta.get("relaxed_initial_points", [meta["relaxed_initial_point"]])[:args.spiq_starts]
+    energies = meta.get("candidate_energies", [meta.get("energy_best")])[:len(points)]
+    return pcirc, points, energies, meta
 
 
 def _counts_to_samples(counts, qubo):
@@ -213,6 +222,7 @@ def solve_with_QAOA_spiq(
     use_local_simulator=False,
     expected_energy=None,
     sanity_check_tolerance=0.25,
+    log_suffix="",
 ):
     """
     SPIQ-initialized QAOA: optimise over the RELAXED ansatz (one parameter
@@ -222,15 +232,15 @@ def solve_with_QAOA_spiq(
     If `expected_energy` (SPIQ's Ising-scale energy_best) is given, first
     checks that binding the initial point into pcirc reproduces it.
 
-    Returns (response, final_point, used_eval, min_state_buffer), the same
-    shape as `solve_with_QAOA`.
+    Returns (response, final_point, used_eval, min_state_buffer, energy_log_path);
+    the first four match `solve_with_QAOA`.
     """
     quantum_instance = get_local_QASM_backend() if use_local_simulator else get_IBMQ_backend()
 
     os.makedirs(result_dir, exist_ok=True)
     energy_log_path = os.path.join(
         result_dir,
-        f"energy_per_iteration_{iterations}_{current_optim}_{TAG}_{TRIAL_ID}.csv",
+        f"energy_per_iteration_{iterations}_{current_optim}_{TAG}_{TRIAL_ID}{log_suffix}.csv",
     )
 
     energies = []
@@ -340,7 +350,7 @@ def solve_with_QAOA_spiq(
         f"opt_result.fun={opt_result.fun}"
     )
 
-    return response, final_point, eval_count, min_state_buffer
+    return response, final_point, eval_count, min_state_buffer, energy_log_path
 
 
 def solve_with_QAOA(qubo, iterations, result_dir, reps=TAG, use_local_simulator=False):
@@ -458,8 +468,8 @@ def conduct_IBMQ_QPU_experiments():
                 spiq_bundle = _load_spiq_initialization(SPIQ_JSON)
                 print(
                     f"[spiq] loaded {SPIQ_JSON}: "
-                    f"{len(spiq_bundle[1])} relaxed angles, "
-                    f"pcirc qpy={spiq_bundle[2].get('pcirc_qpy')}"
+                    f"{len(spiq_bundle[1])} start point(s) of {len(spiq_bundle[1][0])} relaxed angles, "
+                    f"pcirc qpy={spiq_bundle[3].get('pcirc_qpy')}"
                 )
             except Exception as exc:
                 print(f"[spiq] failed to load {SPIQ_JSON}: {exc}. Falling back to vanilla QAOA.")
@@ -467,12 +477,31 @@ def conduct_IBMQ_QPU_experiments():
 
         use_local = processing != "qpu"
         if spiq_bundle is not None:
-            pcirc_spiq, relaxed_ip, spiq_meta = spiq_bundle
-            response, init_point, used_eval, min_state_buffer = solve_with_QAOA_spiq(
-                qubo, iterations, pcirc_spiq, relaxed_ip, result_dir,
-                use_local_simulator=use_local,
-                expected_energy=spiq_meta.get("energy_best"),
-            )
+            pcirc_spiq, relaxed_ips, expected_energies, _spiq_meta = spiq_bundle
+            runs = []
+            for j, (ip, e0) in enumerate(zip(relaxed_ips, expected_energies)):
+                print(f"[multi-start] start {j + 1}/{len(relaxed_ips)} (SPIQ Ising energy {e0})")
+                runs.append(solve_with_QAOA_spiq(
+                    qubo, iterations, pcirc_spiq, ip, result_dir,
+                    use_local_simulator=use_local,
+                    expected_energy=e0,
+                    log_suffix=f"_start{j}",
+                ))
+
+            def _run_min(run):
+                return run[3]["min_energy"] if run[3] is not None else float("inf")
+
+            best_j = min(range(len(runs)), key=lambda j: _run_min(runs[j]))
+            for j, run in enumerate(runs):
+                print(f"[multi-start] start {j}: best_energy={_run_min(run)}, evals={run[2]}"
+                      f"{'  <-- kept' if j == best_j else ''}")
+            response, init_point, used_eval, min_state_buffer, best_log = runs[best_j]
+            # The circuit the logged per-gate angles belong to; postprocess_results.py re-simulates with it.
+            with open(os.path.join(result_dir, "pcirc.qpy"), "wb") as fqpy:
+                qpy.dump(pcirc_spiq, fqpy)
+            # Unsuffixed log = winning run, so postprocess_results.py / plots read it unchanged.
+            shutil.copyfile(best_log, os.path.join(
+                result_dir, f"energy_per_iteration_{iterations}_{current_optim}_{TAG}_{TRIAL_ID}.csv"))
         else:
             response, init_point, used_eval, min_state_buffer = solve_with_QAOA(
                 qubo, iterations, result_dir, reps=TAG, use_local_simulator=use_local)

@@ -231,8 +231,14 @@ def claptonize(
     populations between rounds; `budget` (via optimizer_and_loss_kwargs) is the
     number of GA generations. `paulis` use qubit 0 as the first character.
 
+    Each parallel GA m is seeded with `seed + m` (optimizer_and_loss_kwargs["seed"],
+    default 0), so the n_starts searches are independent rather than identical.
+
     Returns (x_best, energy_noisy, energy_ideal[, n_rounds], best_solutions,
-    best_fitness_vals), where x_best is the list of Clifford parameters k_i.
+    best_fitness_vals, pool_xs, pool_src), where x_best is the list of Clifford
+    parameters k_i. pool_xs holds every GA's last-round elite plus its
+    per-generation best solutions over all rounds (unsorted, may repeat), and
+    pool_src the id of the GA each row came from.
     """
     sig_handler = SignalHandler()
 
@@ -255,6 +261,14 @@ def claptonize(
     optimizer_and_loss_kwargs["mutation_probability"] = mutation_probability
     optimizer_and_loss_kwargs["crossover_type"] = crossover_type
     optimizer_and_loss_kwargs["keep_elitism"] = keep_elitism
+
+    # Multi-start candidate pool: (k-vectors, source GA id) from every GA and round.
+    pool_xs, pool_src = [], []
+
+    def _add_to_pool(ga_id, elite_xs, history):
+        rows = list(np.asarray(elite_xs)) + list(np.asarray(history))
+        pool_xs.extend(rows)
+        pool_src.extend([ga_id] * len(rows))
 
     r_idx = 0
     r_idx_last_change = 0
@@ -286,6 +300,7 @@ def claptonize(
             **optimizer_and_loss_kwargs,
         )
         best_count = len(xs)
+        _add_to_pool(0, xs, best_solutions)
 
         # wait until others are finished
         for master_process in master_processes:
@@ -295,6 +310,7 @@ def claptonize(
             item = master_queue.get()
             xs = np.vstack((xs, item[1]))
             losses = np.concatenate((losses, item[2]))
+            _add_to_pool(item[0], item[1], item[3])
         num_xs = xs.shape[0]
         assert num_xs == n_starts * best_count
 
@@ -343,6 +359,8 @@ def claptonize(
             r_idx,
             best_solutions,
             best_fitness_vals,
+            np.asarray(pool_xs),
+            np.asarray(pool_src),
         )
     else:
         return (
@@ -351,6 +369,8 @@ def claptonize(
             energy_ideal,
             best_solutions,
             best_fitness_vals,
+            np.asarray(pool_xs),
+            np.asarray(pool_src),
         )
 
 
@@ -379,6 +399,7 @@ def genetic_algorithm(
     mutation_type: str = "adaptive",
     mutation_probability: tuple[float, float] = (0.25, 0.01),  # (0.25, 0.05)
     out_file: str = "",
+    seed: int = 0,
     **loss_kwargs,
 ):
     print(f"started GA at id {master_id} with {n_proc} procs\n")
@@ -463,7 +484,8 @@ def genetic_algorithm(
         mutation_probability=mutation_probability,
         keep_elitism=keep_elitism,
         fitness_batch_size=population_size,
-        random_seed=0,
+        # Per-GA seed: identical seeds made the parallel GAs identical searches.
+        random_seed=seed + (master_id or 0),
         save_best_solutions=True,
         on_generation=print_on_generation,
     )
