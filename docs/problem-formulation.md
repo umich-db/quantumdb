@@ -1,256 +1,202 @@
-# Join-order problem formulation for QAOA
+# How the join-order problem is turned into a QAOA problem
 
-A living record of the QUBO/Hamiltonian formulation: what it is, what is wrong with it, what we changed, and what experiments showed.
-Update it with every formulation change and every experiment that tests one. `CHANGELOG.md` still records code changes; this file records the reasoning and results.
-
-Problems used throughout (`base/ExperimentalAnalysis/IBMQ/QPUPerformance/Problems/JSON/`):
-
-| | Relations (card) | Predicates (selectivity) | True optimum C_out |
-|---|---|---|---|
-| P1 | 10, 15, 20 | (0,1) 0.1, (1,2) 0.1 | 15 |
-| P2 | 10, 15, 20, 30 | (0,1) 0.1, (2,3) 0.1 | 315 |
-| P3 | 10, 15, 20, 30 | (0,1) 0.1, (1,2) 0.2, (2,3) 0.3, (0,2) 0.4, (0,3) 0.5, (1,2) 0.6 | 29.4 (both (1,2) predicates applied) |
+This file explains, in plain terms, how we turn "pick the best join order" into something QAOA can solve.
+It covers what we had before, what was wrong with it, and what we changed.
+Keep it updated whenever the formulation changes or an experiment tests it. Code changes also go in `CHANGELOG.md`.
 
 ---
 
-## Status
+## 1. The idea in one paragraph
 
-| Item | State |
-|---|---|
-| Analysis of the current (Q2O / VLDB'24) formulation | done (2026-10-07) |
-| New QAOA-oriented QUBO (`generate_qaoa_qubo_left_deep`) | planned |
-| Evaluator fix: apply every predicate on a repeated relation pair | planned |
-| Brute-force self-check `base/test_qubo_formulation.py` | planned |
-| SPIQ + QAOA runs with the new formulation | planned |
+QAOA cannot "search for the cheapest join order" directly. It can only find bitstrings with **low energy**.
+So we write an energy formula over bits with two goals:
+- every bitstring that is **not a real join order** gets a **penalty**, so its energy is high;
+- among real join orders, **cheaper plans get lower energy**.
 
----
+If both goals hold, the lowest-energy bitstring is the best join order, and QAOA, by looking for low energy, finds good plans.
+If either goal fails, QAOA can be doing its job perfectly and still return a bad plan.
 
-## 1. The current formulation
+**Formula vs Hamiltonian.** The energy formula is called a QUBO. The code (`qubo.to_ising()`) turns it into a Hamiltonian, which is the same formula rewritten for qubits. That conversion is exact and was never the problem. Everything below is about the formula itself.
 
-Source: `base/Scripts/QUBOGenerator.py::generate_IBMQ_QUBO_for_left_deep_trees_v2`. It follows the native encoding of Schönberger, Trummer and Mauerer (VLDB'24), which was designed for digital annealing.
+## 2. Our test problems
 
-- **Variables:** `v[t,j]` means relation t is in join j, for J = R−2 encoded joins; the last join contains every relation and is not encoded. `w[p,j]` means predicate p is applied at join j. That is (R+P)(R−2) qubits.
-- **Constraints:**
-  - `H_A = Σ_j (j+2 − Σ_t v_tj)²` fixes join j at j+2 relations.
-  - `H_B = Σ v_t,j−1 (1 − v_tj)` makes a relation, once joined, stay joined.
-  - `H_pred = Σ w_pj (2 − v_aj − v_bj)` makes `w ≤ v_a, v_b`.
-- **Cost:** `H_cost = Σ_j L_j²` with `L_j = Σ_t log c_t v_tj + Σ_p log s_p w_pj`, the log of intermediate result j.
-- **Total:** `H = λ (H_A + H_B + H_pred) + H_cost`, with λ = J.
-- **Hamiltonian:** `from_docplex_mp(model).to_ising()` substitutes x_i = (1 − Z_i)/2, which gives `Σ h_i Z_i + Σ J_ij Z_i Z_j + offset`. This translation is exact, and the offset is handled consistently in `IBMQExperiments.py` and `spiq_initialization.py`.
-- **Circuit:** `QAOAAnsatz(op)` is standard QAOA: initial state |+⟩ⁿ, cost layer RZ/RZZ, mixer RX. The squared cost puts a ZZ term on every v/w pair inside a join column, so the circuit is dense.
-
-The Hamiltonian and circuit match the QUBO correctly. The defects are in the QUBO itself.
-
-## 2. Findings (2026-10-07)
-
-### 2.1 Root cause of the suboptimal samples: infeasible ground state
-Brute-forcing every bitstring of the current QUBO shows the following:
-- **Valid plans are ranked correctly.** The lowest-energy valid plan is the true optimum for P1, P2 and P3.
-- **The penalty weight is too small.** λ = J is not derived from the cost scale. One unit of violation costs λ but can save more than λ in `H_cost`.
-
-| | λ used | Exact threshold λ* | Safe bound (min valid H_cost) | Invalid states below the best valid one | Ground state |
-|---|---|---|---|---|---|
-| P1 | 1 | 1.352 | 1.383 | 2 | E=1.031: {0,1} plus an illegal predicate var (1,2) that drives L to 0.18. The 2nd state is {1,2} plus an illegal predicate, which decodes to **cost 30**. This explains the observed ~50/50 split between 15 and 30. |
-| P2 | 2 | 4.753 | 7.519 | 10 | E=4.766: v = {0,1},{0,1}, so join 2 is missing a relation. It decodes to [1,0,3,2], **cost 465**. This is the observed 99.99% at 465. |
-| P3 | 2 | 1.156 | 2.725 | 0 | valid and optimal (29.4) |
-
-- **λ\*** is the exact smallest weight for which the ground state is valid: λ\* = max over invalid x of (best valid H_cost − H_cost(x)) / penalty(x). It comes from brute force over every bitstring, so it is only computable for small problems.
-- **The safe bound** is guaranteed but loose. Worked examples are in §4.
-
-The squared cost makes this worse. `L_j²` rewards anything that pushes L_j toward **0**, including dropping a relation or turning on an inapplicable predicate. Each saves roughly 2·L·Δ, which is far more than λ.
-
-### 2.2 Are the constraints necessary and sufficient?
-- **H_A + H_B = 0 ⇔ valid left-deep plan.** The columns are nested sets of size 2, …, R−1. This is necessary and sufficient, up to swapping the first two relations. Nothing in it is redundant.
-- **H_pred is one-sided.** It allows a predicate to be off even when both of its relations are present, and relies on the cost to switch it on. Under the square, if L_j would go negative, leaving the predicate off is cheaper, so selectivity is under-reported. This does not happen in P1–P3.
-- **The penalty weight is insufficient.** All penalty terms are integers, so any violation costs at least λ. A sufficient condition for a feasible ground state is therefore λ > min_valid H_cost − min_all H_cost. With the squared cost min_all is 0. λ = J does not meet this condition.
-- **Dead code:** `get_log_values(num_decimal_pos)` rounding is left over from the threshold formulation.
-- **Qubit reduction:** the P·J predicate qubits can be removed by substituting w_pj = v_aj·v_bj (see §3).
-
-### 2.3 Repeated predicate pairs (P3)
-P3 lists (1,2) twice, with selectivities 0.2 and 0.6. This means two predicates between the same two tables, e.g. `A.x = B.x AND A.y = B.y`. Assuming they are independent, the combined selectivity is the product 0.2·0.6, and both the cost and the energy should reflect it.
-- The QUBO already applies both.
-- `Postprocessing.get_selectivity_for_new_relation` uses `pred.index`, which applies only the first.
-
-As a result the evaluator reports the P3 optimum as 39 while the QUBO's is 29.4. It is the same plan, so the optimal ratio is unaffected, but the energy and cost columns disagree.
-
-### 2.4 Cost functions compared
-- **Current (VLDB'24):** `Σ_j L_j²`. This is a convex surrogate in log space.
-- **Ready to Leap (SIGMOD'23).** This is from memory of the paper; re-check against the text before citing it.
-  - It uses the Trummer & Koch MILP: threshold indicators `cto_{r,j}` are set when log|T_j| exceeds log θ_r, and the cost is `Σ_j Σ_r Δθ_r · cto_{r,j}`.
-  - That is a step-function approximation of the *actual* cardinality, and it is linear in qubits.
-  - Inequalities become equalities with binary slack qubits, and log values are discretised.
-  - The cost is monotone in cardinality but quantised, so plans in the same bucket get the same energy. Its accuracy depends on where the thresholds are placed.
-  - Big-M and slack penalties make the coefficients large.
-- **Would Ready to Leap be better? No.** Being gate-based does not make it QAOA-friendly. It is still a penalty QUBO. Its slack and threshold qubits exceed the 23-qubit limit and make the λ problem worse. Its one advantage, a cardinality-scale cost, is not what is failing here.
-
-Surrogate fidelity against true C_out over all valid plans, as Kendall τ and whether the surrogate's best plan is the true optimum:
-
-| | Σ L² (current) | Σ L (linear) | max L |
+| | Tables (rows in each) | Join conditions (selectivity) | Best plan's cost |
 |---|---|---|---|
-| P1 | 1.00 / correct | 1.00 / correct | 1.00 / correct |
-| P2 | 0.76 / correct | 0.73 / correct | 0.78 / correct |
-| P3 | 0.94 / correct | 0.94 / correct | 0.93 / correct |
+| P1 | 10, 15, 20 | 0–1 (0.1), 1–2 (0.1) | 15 |
+| P2 | 10, 15, 20, 30 | 0–1 (0.1), 2–3 (0.1) | 315 |
+| P3 | 10, 15, 20, 30 | 0–1 (0.1), 1–2 (0.2), 2–3 (0.3), 0–2 (0.4), 0–3 (0.5), 1–2 again (0.6) | 29.4 |
 
-The square adds nothing to the ranking. It is also the term that forces the predicate qubits and creates the incentive to push L toward 0.
+A plan's **cost** is the total size of the intermediate results. Example for P2 with order 0, 1, 2, 3:
+- joining 0 and 1 gives 10 × 15 × 0.1 = **15** rows;
+- adding table 2 gives 15 × 20 = **300** rows;
+- so the cost is 15 + 300 = **315**. The final join always contains every table, so it is the same for every plan and isn't counted.
 
-## 3. Proposed formulation (QAOA-oriented, still a QUBO)
+## 3. What we had before (the "Q2O" formulation, built for digital annealers)
 
-Add a new builder `generate_qaoa_qubo_left_deep(card, pred, pred_sel)` in `base/Scripts/QUBOGenerator.py`:
-1. **Remove the predicate variables and use a linear log cost.** The cost becomes `H_cost = Σ_j (Σ_t log c_t v_tj + Σ_p log s_p v_aj v_bj)`, which is still quadratic.
-   - Qubits drop from (R+P)(R−2) to R(R−2): P1 5→3, P2 12→8, P3 20→8.
-   - `H_pred` disappears, and the incentive to push L toward 0 goes with it.
-2. **Derive λ from the cost scale:** λ = H_cost(identity-order plan) − Σ_j Σ_p min(0, log s_p) + 1.
-   - This guarantees a feasible ground state.
-   - Keep `penalty_scaling` as the tuning knob.
-   - Keep λ as small as is safe. A large λ squeezes the valid-plan energy range (about 2) inside the full range (about 150), which hurts QAOA's angle resolution.
-   - This rule is up to 30× looser than needed. Prefer λ = max_t log c_t + margin, keeping the safe rule as the fallback (see §4.5).
-3. Keep `H_A` and `H_B` unchanged.
+### The bits
+- One bit per **(table, join step)**: "is this table in the result after this join step?" For 4 tables that is 4 × 2 = 8 bits.
+- One extra bit per **(join condition, join step)**: "is this join condition applied at this step?" For P3, with 6 conditions, that is 12 more bits.
 
-Brute-force pre-check, done in pure Python: the ground state is valid and optimal for P1–P3 with λ = 4.2, 8.7, 9.6.
+### The energy
+- **Penalty A:** each join step must contain the right number of tables (2 after the first join, 3 after the second, and so on).
+- **Penalty B:** once a table is in, it stays in.
+- **Penalty C:** a join condition may only be "on" if both of its tables are in.
+- **Cost:** for each join step, take the log of the result size and **square it**. Logs turn the multiplications into additions.
+- All penalties are multiplied by a weight λ, which was set to **the number of join steps** (1 for P1, 2 for P2 and P3).
 
-| | λ | Gap to 2nd valid plan | Valid E range | Full E range |
-|---|---|---|---|---|
-| P1 | 4.18 | 0.301 | 1.12 | 15.5 |
-| P2 | 8.65 | 0.176 | 1.95 | 146.4 |
-| P3 | 9.62 | 0.380 | 2.83 | 163.0 |
+## 4. What was wrong with it
 
-Wiring:
-- `base/config.py`: add `"qubo-formulation": "q2o" | "qaoa"`.
-- Add `QUBOGenerator.FORMULATIONS = {"q2o": ..., "qaoa": ...}`. The callers in `IBMQExperiments.py`, `spiq_initialization.py` and `postprocess_results.py` look the builder up through it.
-- `spiq_initialization.py`: add the formulation to `shape_suffix`, so `.qpy` files with different qubit counts don't collide.
-- The decoder needs no change, because `readout` already slices the first R(R−2) bits.
-- **Evaluator fix:** `get_selectivity_for_new_relation` multiplies every matching predicate. P3's target in `graphs/seeded-multi-spiq.rmd` changes from 39 to 29.4.
+### Problem 1: the penalty was too weak, so the lowest energy belonged to an invalid bitstring
+Real-plan energies were ranked correctly; the cheapest plan had the lowest energy among real plans. But a **fake plan** that breaks a rule could get an even lower energy, because breaking a rule cost only λ = 2 while saving more than that.
 
-Deferred, with the condition for revisiting each:
-- **Squared-cost HUBO** (degree 4, predicate vars substituted). QAOA can run it natively. Revisit if the linear surrogate ranks plans worse than the squared one on larger problems.
-- **Exact per-join C_out polynomial** (≤ 2^R terms per join). Revisit if a surrogate mis-ranks optima on larger problems.
-- **One-hot position encoding with an XY mixer.** It needs no λ, but costs R(R−1) qubits and a custom mixer in SPIQ/Clapton.
-- **Binary entry-time encoding.** It only saves qubits for R ≥ 5.
+**P2 example** (all logs are base 10):
 
-Verification:
-- `base/test_qubo_formulation.py` (assert style) checks, for P1–P3 by brute force:
-  - the ground state is valid;
-  - the decoded cost equals the true optimum;
-  - the qubit count is R(R−2).
-- SPIQ + QAOA on P1–P3 with `"qubo-formulation": "qaoa"`, comparing optimal ratios against Week93–95.
-
-## 4. Worked numerical examples
-
-All values are base-10 logs. For P1 and P2: log 10 = 1, log 15 = 1.17609, log 20 = 1.30103, log 30 = 1.47712, log 0.1 = −1.
-These are exact evaluations of the energy function, not circuit simulations. QAOA runs are deferred to the container.
-
-### 4.1 P2: why the 465 plan wins under the current penalty
-Two encoded joins: join 1 has 2 relations and join 2 has 3. Predicates: (0,1) and (2,3), each with selectivity 0.1.
-
-**State O (valid, optimal plan [0,1,2,3], C_out = 15 + 300 = 315)**
-- Join 1 is {0,1} with the predicate on: L₁ = 1 + 1.17609 − 1 = 1.17609, so L₁² = 1.38319.
-- Join 2 is {0,1,2} with the predicate on: L₂ = 1 + 1.17609 + 1.30103 − 1 = 2.47712, so L₂² = 6.13612.
-- Penalty is 0, so **E_O = 7.51931 for any λ**.
-
-**State X (invalid: relation 2 dropped from join 2)**
-- Join 1 is {0,1}: 1.38319.
-- Join 2 is {0,1} instead of 3 relations: L₂ = 1.17609, so L₂² = 1.38319.
-- H_A = (3 − 2)² = 1. H_B = 0 and H_pred = 0.
-- **E_X = λ·1 + 2.76638.** With λ = 2 this is **4.766 < 7.519**, so X is the ground state.
-
-**Decoding X.** The v rows are r0 = [1,1], r1 = [1,1], r2 = [0,0], r3 = [0,0]. With weights [2,1] the scores are [3,3,0,0]. `argsort` reversed gives [1,0,3,2]. Relations 2 and 3 tie, and the index order of the tie puts 3 first. The plan cost is 15 + 15·30 = **465**, the second-best plan. This is the 99.99% observed in Week94.
-
-**Threshold.** E_X > E_O requires λ > 7.51931 − 2.76638 = **4.75293** = λ\*. At λ = 4, X still wins: 6.766 < 7.519.
-
-**The same state in the proposed linear formulation (no predicate qubits)**
-- E_O = L₁ + L₂ = 1.17609 + 2.47712 = 3.65321.
-- E_X = λ + 1.17609 + 1.17609 = λ + 2.35218.
-- The threshold is λ > **1.30103**, which is exactly log 20, the log-cardinality of the dropped relation.
-
-### 4.2 Why the squared cost inflates the penalty needed
-Dropping a relation with log-cardinality ℓ from a join with log-size L saves:
-
-| Cost | Saving | Example (P2: L = 2.477, ℓ = 1.301) |
+| Bitstring | What it means | Energy |
 |---|---|---|
-| Squared (q2o) | L² − (L − ℓ)² = 2Lℓ − ℓ² | 4.753 |
-| Linear (proposed) | ℓ (minus any predicates it enabled, which are negative) | 1.301 |
+| Best real plan | step 1 = {0,1}, step 2 = {0,1,2} | 1.18² + 2.48² = **7.52** |
+| Fake plan | step 1 = {0,1}, step 2 = {0,1}: table 2 forgotten, so Penalty A = 1 | 2 × 1 + 1.18² + 1.18² = **4.77** |
 
-- **Scaling.** The squared saving grows with L, the size of the whole intermediate result. The linear saving is bounded by one relation's log-cardinality.
-- **Estimate for a 10-relation query** with cardinalities around 10⁵ (ℓ ≈ 5, late-join L ≈ 20):
-  - The squared form needs λ of about 2·20·5 − 25 = **175** per violation.
-  - The linear form needs λ of about **5**.
-  - The optimal-vs-second-best gap is O(1) in both, so in the squared form that gap sits inside a range about 35× wider.
+The fake plan wins. When decoded, it turns into the order 1, 0, 3, 2, which costs **465**. That is exactly what we saw: 99.99% of P2 samples had cost 465.
+For the real plan to win, λ needed to be above 4.75. It was 2.
 
-### 4.3 P1: the illegal-predicate state behind cost 30
-One encoded join of size 2. Predicates: (0,1) and (1,2), each with selectivity 0.1.
+**P1 example.** The lowest energies belonged to bitstrings that switched on a join condition whose tables weren't both present, which Penalty C allows at the price of only 1. One of them decodes to the cost-**30** plan. That explains P1's 50/50 split between 15 and 30.
 
-| State | v | w | L | L² | Penalty | E at λ = 1 | Decodes to |
-|---|---|---|---|---|---|---|---|
-| O (valid) | {0,1} | (0,1) | 1.17609 | 1.38319 | 0 | 1.383 | 15 |
-| X | {0,1} | (0,1), (1,2)✗ | 0.17609 | 0.03101 | H_pred = 1 | **1.031** | 15 |
-| Y | {1,2} | (1,2), (0,1)✗ | 0.47712 | 0.22764 | H_pred = 1 | **1.228** | **30** |
-| Valid {1,2} | {1,2} | (1,2) | 1.47712 | 2.18188 | 0 | 2.182 | 30 |
+### Problem 2: squaring the cost rewards "making the result look small"
+With a squared cost, anything that pushes the log-size toward 0 lowers the energy, including cheating: dropping a table, or switching on a join condition that doesn't apply. And the bigger the join, the more one cheat saves:
+- squared cost: dropping a table of log-size ℓ from a join of log-size L saves 2·L·ℓ − ℓ². In P2 that is **4.75**;
+- plain (unsquared) cost: it saves only ℓ. In P2 that is **1.30**.
 
-✗ marks a predicate switched on although one of its relations is absent.
+For a 10-table query with tables of about 100,000 rows, the squared version would need a penalty around **175**, compared with about **5** for the plain one.
 
-- Both X and Y sit below O. Each pays λ = 1 for one illegal predicate so that it can subtract another −1 inside the square.
-- The ground state X happens to decode to the right plan. Y, the next state, decodes to 30, which explains the observed split.
-- Threshold: λ > 1.38319 − 0.03101 = **1.352**.
-- In the proposed formulation this state cannot exist. The predicate term is log s·v₁v₂, which is zero unless both relations are present.
+### Problem 3: too many qubits
+The join-condition bits add (number of conditions) × (number of join steps) qubits: 2, 4 and 12 extra for P1, P2 and P3. They exist only because the squared cost can't be written without them.
 
-### 4.4 Full Hamiltonian of P1 in the proposed formulation
-There are 3 qubits, v₀, v₁ and v₂.
+### Problem 4: the cost checker disagreed with the energy on P3
+P3 lists the pair 1–2 twice. That means two separate conditions between the same tables, for example `A.x = B.x AND A.y = B.y`, so both selectivities should apply: 0.2 × 0.6. The energy formula applied both, but the cost checker (`Postprocessing.py`) applied only the first. So the checker said P3's best cost was 39, while the true best is 29.4. It was the same plan either way.
 
-**QUBO:**
-`H = λ(2 − v₀ − v₁ − v₂)² + 1·v₀ + 1.17609·v₁ + 1.30103·v₂ − v₀v₁ − v₁v₂`
+### What was fine
+- Penalties A and B together are exactly right. A bitstring passes both if and only if it is a real join order. Nothing is missing and nothing is extra.
+- Turning the formula into the Hamiltonian, and the QAOA circuit built from it, are correct. They faithfully encode the formula; the formula was the problem.
 
-- Valid states give E = log C_out exactly: {0,1} → 1.17609 = log 15, {1,2} → 1.47712 = log 30, {0,2} → 2.30103 = log 200.
-- With a single join the linear cost is exactly the log of the true cost, so the energy order equals the cost order.
+## 5. What we changed (the "qaoa" formulation)
 
-**Ising form**, with v = (1 − Z)/2:
-- Cost part: 1.23856 − 0.25 Z₀ − 0.08805 Z₁ − 0.40051 Z₂ − 0.25 Z₀Z₁ − 0.25 Z₁Z₂
-- Penalty part: λ·(1 + ½(Z₀ + Z₁ + Z₂) + ½(Z₀Z₁ + Z₀Z₂ + Z₁Z₂))
+| | Before ("q2o") | Now ("qaoa") |
+|---|---|---|
+| Bits | tables × steps **+ conditions × steps** | tables × steps only |
+| Qubits (P1 / P2 / P3) | 5 / 12 / 20 | **3 / 8 / 8** |
+| How a join condition is counted | its own bit, kept honest by Penalty C | "table a is in **and** table b is in", written as the product of their two bits, so it **cannot cheat** |
+| Cost per join step | (log size)² | **log size** (not squared) |
+| Penalty weight λ | number of join steps (1, 2, 2) | **1.1 × the largest log table size** (1.43, 1.63, 1.63), computed from the data |
+| Penalties A and B | yes | yes, unchanged |
+| Penalty C | yes | **gone**: there are no condition bits left to police |
+| Repeated pair (P3 1–2) | energy: both applied; checker: first only | both applied in the energy **and** in the checker |
 
-  This follows because 2 − s = (1 + ΣZ)/2, so (2 − s)² = 1 + ½ΣZ + ½ΣZᵢZⱼ.
-- The circuit has 3 RZ and 3 RZZ gates per layer. The current formulation needs 5 qubits, 5 RZ and 10 RZZ gates.
+### Why each change helps
+- **Removing the condition bits** saves qubits, makes illegal conditions impossible, and removes a whole penalty.
+- **Not squaring** removes the reward for cheating. It still ranks the plans just as well; in all three problems the cheapest plan stays cheapest. With a single join step, the energy of a real plan is exactly log(cost): P1's plans get 1.18 = log 15, 1.48 = log 30 and 2.30 = log 200.
+- **λ from the data.** Cheating by dropping a table saves at most that table's log size, so λ only has to beat the largest one. 1.1 × the largest is just enough. Keeping λ small matters for QAOA: a big penalty stretches the energy range, and the small difference between the best and second-best plan becomes hard to tell apart.
 
-### 4.5 Penalty size vs. resolvable gap (static estimate)
-QAOA has to resolve the energy gap between the optimal plan and the second-best plan. That gap is fixed by the cost, while the full spectrum range grows with λ. A smaller ratio means γ needs finer resolution, and noise or shot error can wipe out the difference. Ratio of gap to range:
+### Checked (exact energies of every bitstring, no QAOA run)
 
-| | λ = 1.1·λ\* | λ = safe rule | λ = 16 | λ = 50 |
+| | λ | Lowest-energy bitstring | Its decoded cost | Best cost |
 |---|---|---|---|---|
-| P1 q2o | 0.0550 | 0.0369 | 0.0061 | 0.0020 |
-| P1 new | 0.2676 | 0.0194 | 0.0048 | 0.0015 |
-| P2 q2o | 0.0069 | 0.0045 | 0.0025 | 0.0008 |
-| P2 new | 0.0075 | 0.0012 | 0.0006 | 0.0002 |
-| P3 q2o | 0.0082 | 0.0036 | 0.0009 | 0.0003 |
-| P3 new | 0.0764 | 0.0023 | 0.0014 | 0.0004 |
+| P1 | 1.43 | a real plan | 15 | 15 |
+| P2 | 1.63 | a real plan | 315 | 315 |
+| P3 | 1.63 | a real plan | 29 (29.4, stored as a whole number) | 29.4 |
 
-The gap/range ratio roughly scales as 1/λ. The safe rule from §3 is loose: for P3 new it gives λ = 9.62 where λ\* = 0.294, about 30× too large. That costs up to 33× in resolvable gap.
+### Expected effect on QAOA (estimates, not yet measured)
 
-**Suggestion.** For the linear formulation, use **λ = max_t log c_t + margin** in place of the safe rule.
-- Rationale: a single dropped relation saves at most max_t log c_t (§4.2).
-- It holds in P1–P3: max log c is 1.301, 1.477 and 1.477, against λ\* of 0.294, 1.301 and 0.294.
-- It is not proven for swap-type H_B violations, where the nested sets are broken but the sizes are kept. So `test_qubo_formulation.py` should assert a valid ground state under this λ, and the code should fall back to the safe rule if a larger problem fails that check.
+| | Two-qubit gates per layer (before → now) | Share of the starting state that is a real plan (before → now) |
+|---|---|---|
+| P1 | 10 → 3 | 15.6% → 37.5% |
+| P2 | 34 → 16 | 0.78% → 4.7% |
+| P3 | 94 → 16 | 0.024% → 4.7% |
 
-### 4.6 QAOA-relevant static properties per formulation
+### Known limit
+The λ rule is argued only for the "forgot a table" kind of cheat. It is not proven for the "swapped a table between steps" kind. It holds on P1–P3; `base/test_qubo_formulation.py` checks this by brute force. If a bigger problem ever ends up with a fake plan at the lowest energy, switch to the guaranteed-safe weight:
 
-| | Qubits | Weight-1 / weight-2 Z terms (RZ / RZZ per layer) | Est. CNOTs per layer before routing (2 per RZZ) | Valid bitstrings / 2ⁿ | Share of the |+⟩ⁿ start that is valid |
+  λ = (energy of any real plan) − (number of join steps × sum of the negative log selectivities) + 1
+
+The safe weight is larger, so the best-vs-second-best difference gets harder to see. A comment in `QUBOGenerator.py` points to this.
+
+## 6. What about the "Ready to Leap" formulation?
+It was built for gate-based machines, but it isn't a better fit for QAOA.
+- It approximates each result size with "is the size above threshold 1? above threshold 2? …" bits, plus extra helper bits to make the inequalities work. That needs many more qubits; even small problems run past our 23-qubit limit.
+- Plans whose sizes fall between the same two thresholds get the same energy, so QAOA can't tell them apart.
+- It still depends on a penalty weight, with the same risk as Problem 1.
+
+(This description is from memory of the paper; re-check it before citing.)
+
+## 7. How to use it
+- `base/config.py`: `"qubo-formulation": "qaoa"` (the default) or `"q2o"` (the old one). `IBMQExperiments.py`, `spiq_initialization.py` and `postprocess_results.py` all read this setting.
+- SPIQ output files now end in `_<formulation>`, e.g. `spiq_initial_point_input1_reps2_4rel_2pred_qaoa.json`, and record the formulation inside the file. `IBMQExperiments.py` refuses to load a SPIQ file made for the other formulation. Older files, which don't record one, count as `"q2o"`.
+- To re-process **old** results with `postprocess_results.py`, set the config to `"q2o"` first.
+- Old CSVs (Week93–95) were scored with the old checker, so P3's target in `graphs/seeded-multi-spiq.rmd` stays at **39** for them. New P3 runs score the best plan as **29**.
+- The decoder needed no change; it already reads only the table bits.
+
+## 8. To do
+- [x] Run `python3 test_qubo_formulation.py` in the container (from `base/`). It passes.
+- [x] Random-start QAOA with the new formulation (Week96–98). Results are in the log below.
+- [ ] Regenerate the SPIQ files for P1–P3 with the new formulation, then run SPIQ-started QAOA in the container. Compare the share of samples at the best plan against Week93–95. This is the fair comparison, since Week93–95 were SPIQ-started.
+- [ ] Later, only if needed: an exact-cost version, or special QAOA mixers that never leave the set of real plans (these need no penalty, but cost more qubits).
+
+## 9. Experiment log
+
+Newest first.
+
+| Date | Formulation | Problem | Result | Where |
+|---|---|---|---|---|
+| 2026-10-12 | q2o, random start, same settings (Week99–101) | P1–P3 | The like-for-like old-formulation partner runs. See "Old vs new formulation" below. | `outputs/uninitialized/Week99–101` (+ `energy/`) |
+| 2026-10-12 | qaoa, **random start**, COBYLA, reps 2, max 1000 iterations | P1–P3 | See the table below. COBYLA stopped early (123–137 evaluations) far above the lowest possible energy, so a random start with only 4 angles does not reach the good plans, even though the formula now puts them at the bottom. | `outputs/uninitialized/Week96–98` (+ `energy/`) |
+| 2026-10-12 | qaoa (λ = 1.1 × largest log size) | P1–P3 | Exact energies: the lowest-energy bitstring is a real plan with the best cost in all three (15, 315, 29). | analysis only |
+| 2026-10-07 | q2o vs qaoa, several λ | P1–P3 | Smallest λ that works: q2o 1.35 / 4.75 / 1.16, qaoa 0.29 / 1.30 / 0.29. A bigger λ shrinks the visible best-vs-second-best difference roughly as 1/λ. | analysis only |
+| 2026-10-07 | q2o, λ = number of steps | P1–P3 | Exact energies: in P1 and P2 a fake plan has the lowest energy and decodes to cost 15/30 (P1) and 465 (P2). | analysis only |
+| 2026-09-30 | q2o, λ = number of steps | P1–P3 | Seeded multi-start SPIQ, share of samples at the best plan: P1 0.507, P2 0.0001 (99.99% at 465), P3 0.126. | `outputs/multi-spiq/Week93–95` |
+
+### Random-start runs with the new formulation (2026-10-12)
+
+"Share at best plan" is the fraction of the 10,240 samples whose decoded plan has the best cost. "Plain" decoding reads the order straight from the bits; "fallback" decoding repairs the order to avoid cross joins.
+
+| | Lowest possible energy | Energy reached | Share at best plan: first step (plain / fallback) | Share at best plan: end (plain / fallback) | Most common plan cost at the end (plain) |
 |---|---|---|---|---|---|
-| P1 q2o | 5 | 5 / 10 | 20 | 5 / 32 | 15.6% |
-| P1 new | 3 | 3 / 3 | 6 | 3 / 8 | 37.5% |
-| P2 q2o | 12 | 12 / 34 | 68 | 32 / 4096 | 0.78% |
-| P2 new | 8 | 8 / 16 | 32 | 12 / 256 | 4.7% |
-| P3 q2o | 20 | 20 / 94 | 188 | 252 / 1,048,576 | 0.024% |
-| P3 new | 8 | 8 / 16 | 32 | 12 / 256 | 4.7% |
+| P1 (Week96) | 1.176 | 1.929 | 0.013 / 0.114 | **0.220 / 0.252** | 30 (63%) |
+| P2 (Week97) | 3.653 | 8.938 | 0.013 / 0.066 | **0.018 / 0.055** | 960 (22%) |
+| P3 (Week98) | 2.334 | 5.507 | 0.008 / 0.125 | **0.036 / 0.189** | 504 (16%) |
 
-- In q2o, the valid count includes predicate-variable on/off choices. P3 has 252 valid bitstrings but only 12 distinct plans; the other bitstrings are valid but carry a worse cost because they leave an applicable predicate off.
-- Expected effect of the proposed formulation:
-  - **P3:** about 6× fewer two-qubit gates per layer, and a starting state about 195× richer in valid plans.
-  - **P2:** about 2× fewer two-qubit gates and about 6× richer.
-- These are estimates to confirm with container runs (§5).
+What this tells us:
+- **P2's "465 trap" is gone.** Week94 put 99.99% of samples on cost 465; Week97's samples are spread across many plans. **P1 still leans to the second-best plan** (63% at cost 30). In the new formula that plan is a real plan with the second-lowest energy (1.477 vs 1.176), not a fake one, so a stronger optimizer or start should move samples to 15.
+- **A random start is too weak to find the best plan.** The energy reached is still far above the lowest possible, so most samples are invalid bitstrings or poor plans. This is a limit of random-start QAOA with 4 angles, not of the formula.
+- **For comparison**, the old formulation's random-start P2 run (Week74/Week84, up to 10,000 iterations) got 0.021 plain / 0.099 fallback, which is similar. Random starts were weak under both formulations.
+- **Next:** SPIQ-started runs with the new formulation. Week93–95 were SPIQ-started, so that is the like-for-like comparison.
 
-## 5. Experiment log
+### Old vs new formulation, both with a random start (2026-10-12)
 
-Newest first. Each entry gives the date, the formulation and its settings, the problem, where the results are, and what they showed.
+To compare fairly, the old formulation was re-run with the same code, settings and starting angles (all 0.5) as Week96–98: Week99 (P1), Week100 (P2) and Week101 (P3). The only difference is `qubo-formulation`.
 
-| Date | Formulation | Problem | Result | Location |
-|---|---|---|---|---|
-| 2026-10-07 | q2o and proposed linear formulation, several λ | P1–P3 | Static landscape analysis: exact λ\*, gap/range vs λ, share of valid states in the start, Z-term counts (§4). The safe λ rule is up to 30× too large, so max log c is suggested instead. | analysis only |
-| 2026-10-07 | q2o, λ=J | P1–P3 | Exact brute force of the QUBO spectrum: the ground state is infeasible for P1 and P2 and decodes to costs 15/30 and 465 (§2.1). | analysis only |
-| 2026-09-30 | q2o, λ=J | P1–P3 | Seeded multi-start SPIQ, share of samples at the optimum (final): P1 0.507, P2 0.0001 (99.99% at 465), P3 0.126 | `outputs/multi-spiq/Week93–95`, `graphs/seeded-multi-spiq.rmd` |
+**Energies.** The two formulations use different energy scales, so the raw numbers can't be compared directly. The last column fixes that: it shows how much of the distance from the starting energy down to the lowest possible energy the optimizer covered (0 = no progress, 1 = reached the bottom).
+
+| Workload | Formulation | Lowest possible | Start energy | Final energy | Best energy seen | Share of the way to the bottom |
+|---|---|---|---|---|---|---|
+| P1 | old (q2o), Week99 | 1.031 | 5.083 | 2.733 | 2.710 | 0.59 |
+| P1 | **new (qaoa), Week96** | 1.176 | 4.364 | 1.935 | 1.929 | **0.76** |
+| P2 | old (q2o), Week100 | 4.766 | 24.684 | 19.404 | 19.269 | 0.27 |
+| P2 | **new (qaoa), Week97** | 3.653 | 13.254 | 8.961 | 8.938 | **0.45** |
+| P3 | old (q2o), Week101 | 2.725 | 30.606 | 22.852 | 22.758 | 0.28 |
+| P3 | **new (qaoa), Week98** | 2.334 | 12.615 | 5.593 | 5.507 | **0.69** |
+
+**Optimal ratio** (share of samples whose plan has the best cost):
+
+| Workload | Formulation | Start: plain | Start: fallback | End: plain | End: fallback | Most common plan at the end (plain) |
+|---|---|---|---|---|---|---|
+| P1 (best 15) | old (q2o) | 0.040 | 0.198 | 0.129 | **0.470** | 30 (55%) |
+| P1 (best 15) | new (qaoa) | 0.013 | 0.114 | **0.220** | 0.252 | 30 (63%) |
+| P2 (best 315) | old (q2o) | 0.010 | 0.060 | 0.018 | **0.101** | 900 (25%) |
+| P2 (best 315) | new (qaoa) | 0.013 | 0.066 | 0.018 | 0.055 | 960 (22%) |
+| P3 (best 29) | old (q2o) | 0.018 | 0.160 | 0.022 | 0.150 | 504 (22%) |
+| P3 (best 29) | new (qaoa) | 0.008 | 0.125 | **0.036** | **0.189** | 504 (16%) |
+
+What this shows:
+- **The optimizer gets much further with the new formulation:** 0.76 vs 0.59, 0.45 vs 0.27 and 0.69 vs 0.28 of the way to the bottom. A smaller penalty weight and fewer qubits make the energy landscape easier for QAOA.
+- **Plain decoding gets better or stays level:** P1 0.129 → 0.220, P2 0.018 → 0.018, P3 0.022 → 0.036.
+- **Fallback decoding is mixed:** P3 improves (0.150 → 0.189), while P1 (0.470 → 0.252) and P2 (0.101 → 0.055) drop. Under the old formulation many samples are fake plans, and the fallback repair often turns those into good plans by luck. With the new formulation more samples are real but second-best plans, which the repair leaves alone.
+- **Neither random start gets most samples onto the best plan.** With only 4 angles and COBYLA stopping after about 120 evaluations, random-start QAOA is weak under both formulations. The bigger test is still SPIQ-started runs.

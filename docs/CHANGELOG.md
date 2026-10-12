@@ -5,6 +5,50 @@ See `RESULTS_INDEX.md` for which week folder holds which run.
 
 ---
 
+## 2026-10-12: Formulation comparison plots (`graphs/formulation.rmd`)
+
+**Files:** `graphs/formulation.rmd` (new)
+
+**What changed:** a new R Markdown file that plots the random-initialization runs for both formulations: new = Week96–98, old = Week99–101. It has:
+- energy-vs-cost boxplots (final and first iteration, raw and fallback) and energy over iterations for every run;
+- the three new-formulation workloads together on one normalized plot;
+- optimal-ratio and start/final-energy tables (`kable`) with bar charts;
+- old-vs-new energy-over-iteration plots per workload, both normalized and raw.
+
+The boxplot and energy helpers come from `qcdkm.rmd` and `visualization.rmd`. The boxplot's size legend now lets ggplot choose its breaks, because one break per distinct probability covered the P2/P3 plots. Paths are relative to the repo root, not hard-coded.
+
+**Why:** visual record of the formulation change. Energies of the two formulations are on different scales, so the comparisons use a normalized energy (1 = start, 0 = lowest possible).
+
+**Checks:** the file knits with `rmarkdown::render` without errors (39 figures). Its tables match `docs/problem-formulation.md` §9.
+
+---
+
+## 2026-10-12: New "qaoa" QUBO formulation; checker applies repeated join conditions
+
+**Files:** `base/Scripts/QUBOGenerator.py`, `base/Scripts/Postprocessing.py`, `base/config.py`,
+`base/IBMQExperiments.py`, `base/spiq_initialization.py`, `base/postprocess_results.py`,
+`base/test_qubo_formulation.py` (new), `docs/problem-formulation.md`
+
+**What changed**
+- New builder `generate_qaoa_qubo_left_deep`:
+  - no join-condition bits; a condition applying is written as the product of its two table bits;
+  - the cost is log size per join step, not squared;
+  - penalty weight = 1.1 × the largest log table size.
+- The qubits drop to 3 / 8 / 8 (from 5 / 12 / 20).
+- `config.py` has a new `"qubo-formulation"` setting (`"qaoa"` by default, or `"q2o"`), read by all three scripts through `QUBOGenerator.FORMULATIONS`.
+- SPIQ file names end in `_<formulation>` and the JSON records the formulation. `IBMQExperiments.py` refuses a SPIQ file made for the other formulation.
+- `get_selectivity_for_new_relation` now multiplies every condition between the new table and the joined ones. Before, it used `pred.index`, so a pair listed twice used only its first selectivity.
+
+**Why:** with the old penalty weight (λ = number of join steps), P1's and P2's lowest-energy bitstrings were fake plans. P2's decodes to the cost-465 plan seen in 99.99% of Week94 samples. The full explanation is in `docs/problem-formulation.md`. The checker fix brings P3's cost in line with the energy: the best plan scores 29.4 (written as 29), not 39. Old Week95 CSVs still use 39.
+
+**Checks**
+- An exact evaluation of every bitstring (numpy, no QAOA) gives a real, best-cost plan as the lowest energy for P1–P3.
+- The checker gives 15 / 315 / 29.4.
+- `test_qubo_formulation.py` passes in the container. It first failed because `objective.evaluate` rejects tuples, so the test now passes `list(x)`.
+- The first runs with the new formulation are random-start Week96–98 (`docs/RESULTS_INDEX.md`, `docs/problem-formulation.md` §9).
+
+---
+
 ## 2026-09-30: Optimal-ratio tables for the seeded multi-start runs
 
 **Files:** `graphs/seeded-multi-spiq.rmd`

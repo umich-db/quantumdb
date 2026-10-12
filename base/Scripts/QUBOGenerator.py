@@ -1,6 +1,12 @@
-"""QUBO encoding of a left-deep join-ordering problem (paper §3.1).
+"""QUBO encodings of a left-deep join-ordering problem (paper §3.1).
 
-Implements the native, threshold-free encoding of Schönberger, Trummer and
+Two builders, chosen with config.configuration["qubo-formulation"]
+(see docs/problem-formulation.md for why the second one exists):
+    "q2o"  generate_IBMQ_QUBO_for_left_deep_trees_v2: the original encoding below.
+    "qaoa" generate_qaoa_qubo_left_deep: no predicate qubits, linear log cost,
+           penalty weight derived from the cardinalities.
+
+The original builder implements the native, threshold-free encoding of Schönberger, Trummer and
 Mauerer (VLDB'24) adapted for QAOA: only (R + P)(J - 1) binary variables and
 no slack variables, because intermediate-result cost is approximated by the
 square of the logarithmic intermediate cardinality instead of MILP-style
@@ -97,3 +103,56 @@ def generate_IBMQ_QUBO_for_left_deep_trees_v2(card, pred, pred_sel, penalty_scal
     qubo = from_docplex_mp(model)
 
     return qubo, penalty_weight
+
+
+def generate_qaoa_qubo_left_deep(card, pred, pred_sel, penalty_scaling=1):
+    """QAOA-oriented join-ordering QUBO: R(R-2) qubits, only v[t, j].
+
+    Differences from generate_IBMQ_QUBO_for_left_deep_trees_v2:
+      * No predicate variables. "Predicate p applies at join j" is written
+        directly as v[a, j] * v[b, j], so it can never be switched on illegally
+        and H_pred disappears. A pair listed twice adds both selectivities.
+      * Linear cost: H_cost = sum_j log|join j| instead of sum_j (log|join j|)**2.
+        The square rewarded pushing log|join j| towards 0 (e.g. by dropping a
+        relation); the linear form ranks plans the same on P1-P3.
+      * Penalty weight = 1.1 * max_t log10(card_t) * penalty_scaling. Dropping one
+        relation saves at most its log cardinality, so this weight outweighs it,
+        while staying small enough to keep plan-to-plan energy gaps visible.
+
+    Returns:
+        (qubo, penalty_weight): H = penalty_weight * (H_A + H_B) + H_cost.
+    """
+    card = get_log_values(card, 0, use_rounding=False)
+    pred_sel = get_log_values(pred_sel, 0, use_rounding=False)
+
+    model = Model('docplex_model')
+
+    num_relations = len(card)
+    num_joins = len(card) - 2
+
+    v = model.binary_var_matrix(num_relations, num_joins)
+
+    # Same validity terms as the original encoding: join j holds j + 2 relations, and joined relations stay joined.
+    H_A = model.sum((j + 2 - model.sum(v[(t, j)] for t in range(num_relations)))**2 for j in range(num_joins))
+    H_B = model.sum(v[(t, j-1)] - v[(t, j-1)]*v[(t, j)] for t in range(num_relations) for j in range(1, num_joins))
+
+    # log|join j| = sum of log cards of present relations + log sel of every predicate whose two relations are present.
+    H_cost = model.sum(
+        model.sum(card[t]*v[(t, j)] for t in range(num_relations))
+        + model.sum(pred_sel[p]*v[(a, j)]*v[(b, j)] for p, (a, b) in enumerate(pred))
+        for j in range(num_joins))
+
+    # ponytail: heuristic weight, verified only by brute force on P1-P3 (test_qubo_formulation.py);
+    # swap-type H_B violations are not covered by the argument. If a larger problem gets an invalid
+    # ground state, use the safe bound: H_cost(any valid plan) - num_joins * sum(min(0, log sel)) + 1.
+    penalty_weight = 1.1 * max(card) * penalty_scaling
+
+    model.minimize(penalty_weight * (H_A + H_B) + H_cost)
+
+    return from_docplex_mp(model), penalty_weight
+
+
+FORMULATIONS = {
+    "q2o": generate_IBMQ_QUBO_for_left_deep_trees_v2,
+    "qaoa": generate_qaoa_qubo_left_deep,
+}

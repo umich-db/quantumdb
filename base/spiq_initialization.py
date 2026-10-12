@@ -15,7 +15,7 @@ Classical pre-pass that runs in its own environment (qiskit-aer / qiskit-algorit
      qiskit Statevector.
 
 Outputs (in --out_dir): spiq_initial_point_<stub>.json, spiq_pcirc_<stub>.qpy and
-spiq_trace_<stub>.txt, with <stub> = input<idx>_reps<p>_<R>rel_<P>pred.
+spiq_trace_<stub>.txt, with <stub> = input<idx>_reps<p>_<R>rel_<P>pred_<formulation>.
 
 Usage (from base/):
     python3 spiq_initialization.py --input_idx 0 --reps 2 --n_gens 200
@@ -28,6 +28,7 @@ import argparse
 import numpy as np
 import stim
 
+import config
 import Scripts.ProblemGenerator as ProblemGenerator
 import Scripts.QUBOGenerator as QUBOGenerator
 from qiskit.circuit import ParameterExpression
@@ -136,7 +137,7 @@ def build_problem(input_idx: int):
 
     card, pred, pred_sel = ProblemGenerator.get_join_ordering_problem(json_path)
 
-    qubo, penalty_weight = QUBOGenerator.generate_IBMQ_QUBO_for_left_deep_trees_v2(
+    qubo, penalty_weight = QUBOGenerator.FORMULATIONS[config.configuration["qubo-formulation"]](
         card,
         pred,
         pred_sel,
@@ -654,7 +655,7 @@ def main():
 
     exact_ground_state = evaluate_exact_ground_state_energy(qubo)
 
-    shape_suffix = f"{len(card)}rel_{len(pred)}pred"
+    shape_suffix = f"{len(card)}rel_{len(pred)}pred_{config.configuration['qubo-formulation']}"
     base_stub = f"input{args.input_idx}_reps{args.reps}_{shape_suffix}"
 
     out_file = os.path.join(
@@ -705,6 +706,7 @@ def main():
             "pred": [list(p) for p in pred],
             "pred_sel": pred_sel,
             "penalty_weight": float(penalty_weight),
+            "formulation": config.configuration["qubo-formulation"],
         },
         "initial_point": result["initial_point"],
         "relaxed_initial_point": result["relaxed_initial_point"],

@@ -161,6 +161,13 @@ def _load_spiq_initialization(json_path):
             f"Tried: {candidates}"
         )
 
+    spiq_formulation = meta.get("problem_input", {}).get("formulation", "q2o")
+    if spiq_formulation != config.configuration["qubo-formulation"]:
+        raise ValueError(
+            f"{json_path} was built for qubo-formulation {spiq_formulation!r}, but config.py selects "
+            f"{config.configuration['qubo-formulation']!r}. Regenerate it or change config.py."
+        )
+
     with open(qpy_path, "rb") as f:
         pcirc = qpy.load(f)[0]
     points = meta.get("relaxed_initial_points", [meta["relaxed_initial_point"]])[:args.spiq_starts]
@@ -449,7 +456,7 @@ def conduct_IBMQ_QPU_experiments():
         card, pred, pred_sel = ProblemGenerator.get_join_ordering_problem('ExperimentalAnalysis/IBMQ/QPUPerformance/Problems/JSON/' + str(i) + '_predicates')
 
         print("Generating qubo", flush=True)
-        qubo, penalty_weight = QUBOGenerator.generate_IBMQ_QUBO_for_left_deep_trees_v2(card, pred, pred_sel)
+        qubo, penalty_weight = QUBOGenerator.FORMULATIONS[config.configuration["qubo-formulation"]](card, pred, pred_sel)
         check_qubit_from_qubo_and_exit(qubo, max_qubits=23)
 
         currentPath = f'{args.week}/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data'

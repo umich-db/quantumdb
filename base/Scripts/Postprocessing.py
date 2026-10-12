@@ -22,15 +22,16 @@ import numpy as np
 
 
 def get_selectivity_for_new_relation(join_order, j, pred, pred_sel):
-    """Combined selectivity of all predicates between join_order[j] and the relations joined before it."""
+    """Combined selectivity of all predicates between join_order[j] and the relations joined before it.
+
+    A relation pair listed twice is two predicates (e.g. A.x = B.x AND A.y = B.y), so both selectivities apply.
+    """
     sel = 1
     new_relation = join_order[j]
-    for i in range(j):
-        relation = join_order[i]
-        if (relation, new_relation) in pred:
-            sel = sel * pred_sel[pred.index((relation, new_relation))]
-        elif (new_relation, relation) in pred:
-            sel = sel * pred_sel[pred.index((new_relation, relation))]
+    joined = join_order[:j]
+    for (a, b), s in zip(pred, pred_sel):
+        if (a == new_relation and b in joined) or (b == new_relation and a in joined):
+            sel = sel * s
     return sel
 
 
