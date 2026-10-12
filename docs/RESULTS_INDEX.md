@@ -51,6 +51,19 @@ are in `spiq_init_outputs/diverse_WeekNN/`, and the run logs in `logs/diverse_We
 | uninitialized/Week71/Week51 | Random | 4 | 4 | -1.383 | old 4-qubit problem |
 | uninitialized/Week72/Week62 | Random, pair of spiq/Week62 | 4 | 4 | 2.989 | old 4-qubit problem |
 | uninitialized/Week74/Week84 | Random, pair of spiq/Week84 | 12 | 4 | 19.696 | P2 |
+| uninitialized/Week96 | Random, **"qaoa" formulation**, 1000 iterations (stopped after 123 evals) | 3 | 4 | 1.929 | P1 (exact 1.176) |
+| uninitialized/Week97 | Random, **"qaoa" formulation**, 1000 iterations (stopped after 126 evals) | 8 | 4 | 8.938 | P2 (exact 3.653) |
+| uninitialized/Week98 | Random, **"qaoa" formulation**, 1000 iterations (stopped after 137 evals) | 8 | 4 | 5.507 | P3 (exact 2.334) |
+
+| uninitialized/Week99 | Random, **"q2o" formulation**, 1000 iterations (127 evals), same code as Week96–98 | 5 | 4 | 2.710 | P1 (exact 1.031) |
+| uninitialized/Week100 | Random, **"q2o" formulation**, 1000 iterations (120 evals) | 12 | 4 | 19.269 | P2 (exact 4.766) |
+| uninitialized/Week101 | Random, **"q2o" formulation**, 1000 iterations (112 evals); costs use the fixed checker (best = 29) | 20 | 4 | 22.758 | P3 (exact 2.725) |
+
+Plots for Week96–101: `graphs/formulation.rmd`.
+
+Week99–101 are the like-for-like old-formulation partners of Week96–98: same start angles (0.5 each), settings and code; only `qubo-formulation` differs. Each week's `energy/` folder also holds the response pickle (`response_pickle_trial1_<formulation>`).
+
+Week96–98 use the new formulation (`docs/problem-formulation.md`), so their energies are on a different scale from every other row. Compare them by optimal ratio, not by energy.
 
 ## Plots in `graphs/multi-spiq.rmd` (`plot_energy_comparison`)
 

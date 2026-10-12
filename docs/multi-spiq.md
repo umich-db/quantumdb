@@ -109,7 +109,6 @@ Runs: `--n_gens 2000`, 10000 COBYLA iterations, reps 2. P1 used `--n_candidates 
   - There is no k-means and no gradient-norm filter.
   - Hamming distance treats every angle change as distance 1. K-GAPS's (cos θ, sin θ) embedding treats π/2 as closer than π.
 - It adds two things the paper does not describe: merging points by quantum state, and an explicit energy window.
-- The commit `4600dd3a` is titled "k-gaps based", but the code is the max–min Hamming selection described here.
 
 **Runs:** `--n_starts 8 --seed 0 --n_gens 2000 --energy_window 0.25 --n_candidates 10 --spiq_starts 3`, COBYLA with **1000** iterations, reps 2.
 

@@ -30,6 +30,7 @@ import argparse
 import numpy as np
 import stim
 
+import config
 import Scripts.ProblemGenerator as ProblemGenerator
 import Scripts.QUBOGenerator as QUBOGenerator
 from qiskit.circuit import ParameterExpression
@@ -180,7 +181,7 @@ def build_problem(input_idx: int | None = None, problem_json: str | None = None)
 
     card, pred, pred_sel = ProblemGenerator.get_join_ordering_problem(json_path)
 
-    qubo, penalty_weight = QUBOGenerator.generate_IBMQ_QUBO_for_left_deep_trees_v2(
+    qubo, penalty_weight = QUBOGenerator.FORMULATIONS[config.configuration["qubo-formulation"]](
         card,
         pred,
         pred_sel,
@@ -806,6 +807,7 @@ def main():
             "pred": [list(p) for p in pred],
             "pred_sel": pred_sel,
             "penalty_weight": float(penalty_weight),
+            "formulation": config.configuration["qubo-formulation"],
         },
         "initial_point": result["initial_point"],
         "relaxed_initial_point": result["relaxed_initial_point"],

@@ -32,6 +32,7 @@ try:
 except ImportError:  # older qiskit releases
     from qiskit.circuit import qpy_serialization as qpy
 
+import config
 import Scripts.Postprocessing as Postprocessing
 import Scripts.ProblemGenerator as ProblemGenerator
 import Scripts.QUBOGenerator as QUBOGenerator
@@ -262,7 +263,7 @@ def main():
 
     card, pred, pred_sel = ProblemGenerator.get_join_ordering_problem(
         'base/ExperimentalAnalysis/IBMQ/QPUPerformance/Problems/JSON/' + str(input_id) + '_predicates')
-    qubo, penalty_weight = QUBOGenerator.generate_IBMQ_QUBO_for_left_deep_trees_v2(card, pred, pred_sel)
+    qubo, penalty_weight = QUBOGenerator.FORMULATIONS[config.configuration["qubo-formulation"]](card, pred, pred_sel)
 
     for trial in args.trial:
         response = load_pickled_result(
