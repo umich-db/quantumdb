@@ -25,12 +25,25 @@ Older runs are all filed under `input0` whatever the problem, so they're identif
 | Week93 | P1 | **Diverse** multi-start SPIQ, **1000 iterations** | min **1.125** (exact 1.031). SPIQ best Ising -2.935. Starts reached 1.125 / 1.662 / 1.544; winner start0 |
 | Week94 | P2 | **Diverse** multi-start SPIQ, **1000 iterations** | min **5.550** (exact 4.766). SPIQ best Ising -14.918. Starts reached 5.550 / 8.166 / 8.280; winner start0 |
 | Week95 | P3 | **Diverse** multi-start SPIQ, **1000 iterations** | min **12.373** (exact 2.725). SPIQ best Ising -13.372. Starts reached 12.373 / 14.923 / 12.515; winner start0 |
+| Week102 | P1 | Diverse multi-start SPIQ, **"qaoa" formulation** (3 qubits, 18 params), Week93–95 settings | min **1.176 = exact**. SPIQ best Ising -1.494. Pool 2687 k-vectors / 17 distinct states / 6 in window, so only 6 candidates. Starts reached 1.176 / 1.321 / 1.188; winner start0 (284 evals). Optimal ratio 1.000 |
+| Week103 | P2 | Same, "qaoa" (8 qubits, 64 params) | min **3.739** (exact 3.653). SPIQ best Ising -6.712. Pool 3291 / 241 distinct / 123 in window. Starts reached 3.739 / 4.545 / 4.984; winner start0. Optimal ratio 0.503 (rest at 465) |
+| Week104 | P3 | Same, "qaoa" (8 qubits, 64 params) | min **2.334 = exact**. SPIQ best Ising -7.548. Pool 3392 / 177 distinct / 60 in window. Starts reached 2.334 / 3.808 / 2.884; winner start0 (991 evals). Optimal ratio 1.000 |
 
 Week93–95 settings: 8 independent GAs (`--n_starts 8`), seed 0, `--n_gens 2000`,
 `--energy_window 0.25`, `--n_candidates 10`, `--spiq_starts 3`, COBYLA with 1000
 iterations, reps 2, trial 1. Their files are under `iterations_1000/…` with the name
 `energy_per_iteration_1000_COBYLA_2_1*.csv`, not `iterations_10000`. SPIQ outputs
 are in `spiq_init_outputs/diverse_WeekNN/`, and the run logs in `logs/diverse_WeekNN_inputN.log`.
+
+Single-start SPIQ runs (`outputs/spiq/energy/WeekNN`, `outputs/spiq/WeekNN`), new "qaoa" formulation, one GA (`--n_starts 1 --n_proc 8 --seed 0 --n_gens 2000 --n_candidates 1`), `--spiq_starts 1`, COBYLA 1000 iterations, reps 2. SPIQ files in `spiq_init_outputs/single_WeekNN/`, logs in `logs/single_WeekNN_inputN.log`, response pickles in `energy/WeekNN/response_pickle_trial1_qaoa`:
+
+| Week | Problem | Notes |
+|---|---|---|
+| Week105 | P1 | min **1.176 = exact** (284 evals). SPIQ Ising -1.494 (same point as Week102). Optimal ratio 1.000 |
+| Week106 | P2 | min **5.100** (exact 3.653, 1000 evals). SPIQ Ising -5.329. Optimal ratio 0.000 (465 50%, 900 25%, 1350 25%) |
+| Week107 | P3 | min **2.334 = exact** (994 evals). SPIQ Ising -7.548 (same point as Week104). Optimal ratio 1.000 |
+
+Week102–104 use the same settings with the new formulation, so their energies are on the "qaoa" scale (exact 1.176 / 3.653 / 2.334). Their SPIQ files end in `_qaoa`, and each week's `energy/` folder holds the response pickle (`response_pickle_trial1_qaoa`). Unlike Week93–95, the readouts have no `#` run-note line; the settings are here and in the logs. Plots: `graphs/formulation.rmd` sections 4–6.
 
 ## Archived runs (`outputs/`)
 
@@ -59,7 +72,7 @@ are in `spiq_init_outputs/diverse_WeekNN/`, and the run logs in `logs/diverse_We
 | uninitialized/Week100 | Random, **"q2o" formulation**, 1000 iterations (120 evals) | 12 | 4 | 19.269 | P2 (exact 4.766) |
 | uninitialized/Week101 | Random, **"q2o" formulation**, 1000 iterations (112 evals); costs use the fixed checker (best = 29) | 20 | 4 | 22.758 | P3 (exact 2.725) |
 
-Plots for Week96–101: `graphs/formulation.rmd`.
+Plots for Week96–107 (and Week93–95 for comparison): `graphs/formulation.rmd`.
 
 Week99–101 are the like-for-like old-formulation partners of Week96–98: same start angles (0.5 each), settings and code; only `qubo-formulation` differs. Each week's `energy/` folder also holds the response pickle (`response_pickle_trial1_<formulation>`).
 

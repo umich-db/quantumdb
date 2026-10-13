@@ -1,5 +1,5 @@
 ---
-title: "QUBO formulation: old (q2o) vs new (qaoa), random initialization"
+title: "QUBO formulation: old (q2o) vs new (qaoa)"
 output: html_document
 ---
 
@@ -14,14 +14,19 @@ library(glue)
 ```
 
 Plots for the formulation change described in `docs/problem-formulation.md`.
-All runs: random initialization (all four angles 0.5), COBYLA, reps 2, at most 1000 iterations, trial 1, same code.
-Only `qubo-formulation` differs.
+All runs: COBYLA, reps 2, at most 1000 iterations, trial 1.
 
-| Workload | Old formulation (q2o) | New formulation (qaoa) | Best plan cost |
-|---|---|---|---|
-| P1: 3 relations, 2 predicates | Week99 (5 qubits) | Week96 (3 qubits) | 15 |
-| P2: 4 relations, 2 predicates | Week100 (12 qubits) | Week97 (8 qubits) | 315 |
-| P3: 4 relations, 6 predicates | Week101 (20 qubits) | Week98 (8 qubits) | 29 (29.4, stored as an integer) |
+- **Random initialization:** all four angles start at 0.5. Old and new formulations were run with the same code; only `qubo-formulation` differs.
+- **Single-start SPIQ:** the original SPIQ: one GA search (`--n_starts 1`, seed 0, `--n_gens 2000`), one exported point, one QAOA run (`--spiq_starts 1`). New formulation only.
+- **Multi-start SPIQ:** Week93–95 settings (8 seeded GAs, seed 0, `--n_gens 2000`, `--energy_window 0.25`, `--n_candidates 10`, `--spiq_starts 3`). The curve and readouts are from the winning start.
+
+| Workload | Random, old (q2o) | Random, new (qaoa) | Single-SPIQ, new (qaoa) | Multi-SPIQ, old (q2o) | Multi-SPIQ, new (qaoa) | Best plan cost |
+|---|---|---|---|---|---|---|
+| P1: 3 relations, 2 predicates | Week99 | Week96 | Week105 | Week93 | Week102 | 15 |
+| P2: 4 relations, 2 predicates | Week100 | Week97 | Week106 | Week94 | Week103 | 315 |
+| P3: 4 relations, 6 predicates | Week101 | Week98 | Week107 | Week95 | Week104 | 29 (29.4 stored as an integer); **39 in Week95**, which was scored with the old cost checker |
+
+Qubits: old formulation 5 / 12 / 20, new formulation 3 / 8 / 8.
 
 The two formulations put energies on different scales. Compare energies between them with the
 normalized plots (1 = starting energy, 0 = lowest possible energy), not the raw values.
@@ -31,26 +36,37 @@ normalized plots (1 = starting energy, 0 = lowest possible energy), not the raw 
 root <- normalizePath("..")
 sub_dir <- "ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data/iterations_1000/reps_2/COBYLA"
 
+# init: "random", "single-SPIQ" or "multi-SPIQ"; dir: folder under outputs/ holding WeekNN (readouts) and energy/WeekNN
 runs <- tribble(
-  ~problem, ~formulation, ~week, ~input_idx, ~ground_energy, ~target,
-  "P1", "q2o",  99,  0, 1.0310081, 15,
-  "P1", "qaoa", 96,  0, 1.1760913, 15,
-  "P2", "q2o",  100, 1, 4.7663813, 315,
-  "P2", "qaoa", 97,  1, 3.6532125, 315,
-  "P3", "q2o",  101, 2, 2.7249943, 29,
-  "P3", "qaoa", 98,  2, 2.3344538, 29
+  ~problem, ~formulation, ~init, ~dir, ~week, ~input_idx, ~ground_energy, ~target,
+  "P1", "q2o",  "random",     "uninitialized", 99,  0, 1.0310081, 15,
+  "P1", "qaoa", "random",     "uninitialized", 96,  0, 1.1760913, 15,
+  "P2", "q2o",  "random",     "uninitialized", 100, 1, 4.7663813, 315,
+  "P2", "qaoa", "random",     "uninitialized", 97,  1, 3.6532125, 315,
+  "P3", "q2o",  "random",     "uninitialized", 101, 2, 2.7249943, 29,
+  "P3", "qaoa", "random",     "uninitialized", 98,  2, 2.3344538, 29,
+  "P1", "q2o",  "multi-SPIQ", "multi-spiq",    93,  0, 1.0310081, 15,
+  "P1", "qaoa", "multi-SPIQ", "multi-spiq",    102, 0, 1.1760913, 15,
+  "P2", "q2o",  "multi-SPIQ", "multi-spiq",    94,  1, 4.7663813, 315,
+  "P2", "qaoa", "multi-SPIQ", "multi-spiq",    103, 1, 3.6532125, 315,
+  "P3", "q2o",  "multi-SPIQ", "multi-spiq",    95,  2, 2.7249943, 39,  # scored with the old cost checker
+  "P3", "qaoa", "multi-SPIQ", "multi-spiq",    104, 2, 2.3344538, 29,
+  "P1", "qaoa", "single-SPIQ", "spiq",         105, 0, 1.1760913, 15,
+  "P2", "qaoa", "single-SPIQ", "spiq",         106, 1, 3.6532125, 315,
+  "P3", "qaoa", "single-SPIQ", "spiq",         107, 2, 2.3344538, 29
 )
 
-energy_csv <- function(week, input_idx) {
-  glue("{root}/outputs/uninitialized/energy/Week{week}/{sub_dir}/input{input_idx}/trial1/energy_per_iteration_1000_COBYLA_2_1.csv")
+# suffix "" = the run's energy log (the winning start for multi-SPIQ); "_start0" etc. = one start
+energy_csv <- function(r, suffix = "") {
+  glue("{root}/outputs/{r$dir}/energy/Week{r$week}/{sub_dir}/input{r$input_idx}/trial1/energy_per_iteration_1000_COBYLA_2_1{suffix}.csv")
 }
-final_readout <- function(week) {
-  glue("{root}/outputs/uninitialized/Week{week}/{sub_dir}/trial_1/readout_summary.csv")
+final_readout <- function(r) {
+  glue("{root}/outputs/{r$dir}/Week{r$week}/{sub_dir}/trial_1/readout_summary.csv")
 }
-first_readout <- function(week, input_idx) {
-  glue("{root}/outputs/uninitialized/Week{week}/{sub_dir}/input{input_idx}/trial1/readout_summary_eval1.csv")
+first_readout <- function(r) {
+  glue("{root}/outputs/{r$dir}/Week{r$week}/{sub_dir}/input{r$input_idx}/trial1/readout_summary_eval1.csv")
 }
-run_of <- function(p, f) runs %>% filter(problem == p, formulation == f)
+run_of <- function(p, f, i = "random") runs %>% filter(problem == p, formulation == f, init == i)
 ```
 
 ```{r}
@@ -230,25 +246,26 @@ plot_energy_curves <- function(curves, normalise = FALSE, main = "Energy vs Iter
 ```{r}
 # Optimal ratios of every boxplot below, collected for the summary tables
 ratio_rows <- list()
-record_ratio <- function(problem, formulation, stage, fallback, res, target) {
+record_ratio <- function(problem, formulation, init, stage, fallback, res, target) {
   pct <- unlist(res)
   ratio_rows[[length(ratio_rows) + 1]] <<- data.frame(
-    problem = problem, formulation = formulation, stage = stage, used_fallback = fallback,
+    problem = problem, formulation = formulation, init = init, stage = stage, used_fallback = fallback,
     optimal_cost = target, optimal_ratio = if (length(pct) == 0) 0 else pct[1]
   )
 }
 
 # Final and first-iteration readouts of one run, raw and fallback decoding: 4 boxplots + 4 recorded ratios
-readout_boxplots <- function(p, f) {
-  r <- run_of(p, f)
+readout_boxplots <- function(p, f, i = "random") {
+  r <- run_of(p, f, i)
   for (stage in c("final", "first iteration")) {
-    path <- if (stage == "final") final_readout(r$week) else first_readout(r$week, r$input_idx)
+    path <- if (stage == "final") final_readout(r) else first_readout(r)
     for (fb in c(FALSE, TRUE)) {
-      print(glue("{p}, {f} (Week{r$week}), {stage}, used_fallback={fb}; optimal cost {r$target}"))
+      print(glue("{p}, {f}, {i} (Week{r$week}), {stage}, used_fallback={fb}; optimal cost {r$target}"))
       res <- cost_energy_boxplot_prob(path, targetCol="cost", thresh=150, opt="COBYLA", fallback=fb, target=r$target,
-                                      label = glue("{p} {f} (Week{r$week}), {stage}: "))
-      record_ratio(p, f, stage, fb, res, r$target)
-      print(glue("optimal ratio ({if (fb) 'fallback' else 'raw'}) = {round(unlist(res)[1], 4)}"))
+                                      label = glue("{p} {f} {i} (Week{r$week}), {stage}: "))
+      record_ratio(p, f, i, stage, fb, res, r$target)
+      pct <- unlist(res)
+      print(glue("optimal ratio ({if (fb) 'fallback' else 'raw'}) = {sprintf('%.4f', if (length(pct) == 0) 0 else pct[1])}"))
     }
   }
 }
@@ -263,7 +280,7 @@ readout_boxplots("P1", "qaoa")
 ```{r}
 # energy vs iterations; random; new formulation - problem1, trial1
 r <- run_of("P1", "qaoa")
-energy_values <- plot_energy_from_csv(energy_csv(r$week, r$input_idx), baseline = r$ground_energy)
+energy_values <- plot_energy_from_csv(energy_csv(r), baseline = r$ground_energy)
 ```
 
 ## P2 (Week97)
@@ -273,7 +290,7 @@ readout_boxplots("P2", "qaoa")
 ```{r}
 # energy vs iterations; random; new formulation - problem2, trial1
 r <- run_of("P2", "qaoa")
-energy_values <- plot_energy_from_csv(energy_csv(r$week, r$input_idx), baseline = r$ground_energy)
+energy_values <- plot_energy_from_csv(energy_csv(r), baseline = r$ground_energy)
 ```
 
 ## P3 (Week98)
@@ -283,7 +300,7 @@ readout_boxplots("P3", "qaoa")
 ```{r}
 # energy vs iterations; random; new formulation - problem3, trial1
 r <- run_of("P3", "qaoa")
-energy_values <- plot_energy_from_csv(energy_csv(r$week, r$input_idx), baseline = r$ground_energy)
+energy_values <- plot_energy_from_csv(energy_csv(r), baseline = r$ground_energy)
 ```
 
 ## All three workloads together (new formulation)
@@ -291,7 +308,7 @@ Each workload has its own energy scale, so the curves are normalized: 1 = starti
 ```{r}
 new_curves <- lapply(c("P1", "P2", "P3"), function(p) {
   r <- run_of(p, "qaoa")
-  list(file = energy_csv(r$week, r$input_idx), label = glue("{p} (Week{r$week})"),
+  list(file = energy_csv(r), label = glue("{p} (Week{r$week})"),
        col = c(P1 = "blue", P2 = "red", P3 = "purple")[[p]], ground = r$ground_energy)
 })
 plot_energy_curves(new_curves, normalise = TRUE, main = "New formulation, random initialization: P1-P3")
@@ -306,7 +323,7 @@ readout_boxplots("P1", "q2o")
 ```
 ```{r}
 r <- run_of("P1", "q2o")
-energy_values <- plot_energy_from_csv(energy_csv(r$week, r$input_idx), baseline = r$ground_energy)
+energy_values <- plot_energy_from_csv(energy_csv(r), baseline = r$ground_energy)
 ```
 
 ## P2 (Week100)
@@ -315,7 +332,7 @@ readout_boxplots("P2", "q2o")
 ```
 ```{r}
 r <- run_of("P2", "q2o")
-energy_values <- plot_energy_from_csv(energy_csv(r$week, r$input_idx), baseline = r$ground_energy)
+energy_values <- plot_energy_from_csv(energy_csv(r), baseline = r$ground_energy)
 ```
 
 ## P3 (Week101)
@@ -324,15 +341,16 @@ readout_boxplots("P3", "q2o")
 ```
 ```{r}
 r <- run_of("P3", "q2o")
-energy_values <- plot_energy_from_csv(energy_csv(r$week, r$input_idx), baseline = r$ground_energy)
+energy_values <- plot_energy_from_csv(energy_csv(r), baseline = r$ground_energy)
 ```
 
-# 3. Old vs new formulation
+# 3. Old vs new formulation (random initialization)
 
 ## Optimal ratios
 Share of samples whose decoded plan has the best cost. "raw" reads the order straight from the bits; "fallback" repairs it to avoid cross joins.
 ```{r}
 ratio_summary <- do.call(rbind, ratio_rows) %>%
+  filter(init == "random") %>%
   mutate(decoding = if_else(used_fallback, "fallback", "raw"),
          stage = factor(stage, levels = c("first iteration", "final")),
          formulation = factor(formulation, levels = c("q2o", "qaoa")))
@@ -360,18 +378,26 @@ ggplot(ratio_summary, aes(x = problem, y = optimal_ratio, fill = formulation)) +
 "Share of the way to the bottom" = (start − best seen) / (start − lowest possible): 0 = no progress, 1 = reached the ground state.
 This is the fair comparison across formulations, since their raw energies are on different scales.
 ```{r}
-energy_summary <- runs %>%
+# Start = first logged energy, best = lowest logged energy, of the run's energy log
+summarise_energy <- function(rs) {
+  rs$file <- energy_csv(rs)  # glue is vectorised over the rows
+  rs %>%
   rowwise() %>%
   mutate(
-    e = list(read.csv(energy_csv(week, input_idx))$energy),
+    e = list(read.csv(file)$energy),
     evaluations = length(e),
     start_energy = e[1],
     final_energy = e[length(e)],
     best_energy = min(e),
-    share_to_bottom = (start_energy - best_energy) / (start_energy - ground_energy)
+    gap_to_ground = best_energy - ground_energy,
+    # NA when the run starts at the ground state already (0/0)
+    share_to_bottom = if (start_energy - ground_energy < 1e-9) NA_real_ else
+      (start_energy - best_energy) / (start_energy - ground_energy)
   ) %>%
   ungroup() %>%
-  select(problem, formulation, week, evaluations, ground_energy, start_energy, final_energy, best_energy, share_to_bottom)
+  select(problem, formulation, init, week, evaluations, ground_energy, start_energy, final_energy, best_energy, gap_to_ground, share_to_bottom)
+}
+energy_summary <- summarise_energy(runs %>% filter(init == "random"))
 
 knitr::kable(energy_summary, digits = 3, caption = "Energies, old (q2o) vs new (qaoa) formulation, random initialization")
 ```
@@ -390,10 +416,10 @@ ggplot(energy_summary, aes(x = problem, y = share_to_bottom, fill = formulation)
 ## Energy over iterations: old vs new
 For each workload: the normalized plot first (fair comparison), then raw energies with each formulation's own ground-state line.
 ```{r}
-compare_curves <- function(p) {
+compare_curves <- function(p, i = "random") {
   lapply(c("q2o", "qaoa"), function(f) {
-    r <- run_of(p, f)
-    list(file = energy_csv(r$week, r$input_idx),
+    r <- run_of(p, f, i)
+    list(file = energy_csv(r),
          label = glue("{if (f == 'q2o') 'old' else 'new'} ({f}, Week{r$week})"),
          col = if (f == "q2o") "blue" else "red", ground = r$ground_energy)
   })
@@ -416,4 +442,250 @@ plot_energy_curves(compare_curves("P2"), normalise = FALSE, main = "P2: old vs n
 ```{r}
 plot_energy_curves(compare_curves("P3"), normalise = TRUE, main = "P3: old vs new formulation (normalized)")
 plot_energy_curves(compare_curves("P3"), normalise = FALSE, main = "P3: old vs new formulation (raw energy)")
+```
+
+# 4. New formulation (qaoa), multi-start SPIQ (Week102–104)
+
+```{r}
+# Every start's energy log of one multi-SPIQ run on one plot (raw energy, the run's ground-state line).
+# The unsuffixed log is a copy of the winning start, so only the _start<j> files are drawn.
+plot_starts <- function(p, f, i = "multi-SPIQ") {
+  r <- run_of(p, f, i)
+  dir <- dirname(energy_csv(r))
+  files <- sort(list.files(dir, pattern = "_start[0-9]+\\.csv$", full.names = TRUE))
+  cols <- c("blue", "red", "purple", "orange", "brown")
+  curves <- lapply(seq_along(files), function(k) {
+    list(file = files[k], label = sub(".*_(start[0-9]+)\\.csv$", "\\1", files[k]),
+         col = cols[(k - 1) %% length(cols) + 1], ground = r$ground_energy)
+  })
+  plot_energy_curves(curves, normalise = FALSE, main = glue("{p} {f} multi-start SPIQ (Week{r$week}): every start"))
+}
+```
+
+## P1 (Week102)
+```{r}
+readout_boxplots("P1", "qaoa", "multi-SPIQ")
+```
+```{r}
+# energy vs iterations; multi-start SPIQ (winning start); new formulation - problem1, trial1
+r <- run_of("P1", "qaoa", "multi-SPIQ")
+energy_values <- plot_energy_from_csv(energy_csv(r), baseline = r$ground_energy)
+plot_starts("P1", "qaoa")
+```
+
+## P2 (Week103)
+```{r}
+readout_boxplots("P2", "qaoa", "multi-SPIQ")
+```
+```{r}
+r <- run_of("P2", "qaoa", "multi-SPIQ")
+energy_values <- plot_energy_from_csv(energy_csv(r), baseline = r$ground_energy)
+plot_starts("P2", "qaoa")
+```
+
+## P3 (Week104)
+```{r}
+readout_boxplots("P3", "qaoa", "multi-SPIQ")
+```
+```{r}
+r <- run_of("P3", "qaoa", "multi-SPIQ")
+energy_values <- plot_energy_from_csv(energy_csv(r), baseline = r$ground_energy)
+plot_starts("P3", "qaoa")
+```
+
+## All three workloads together (new formulation, multi-start SPIQ)
+```{r}
+spiq_curves <- lapply(c("P1", "P2", "P3"), function(p) {
+  r <- run_of(p, "qaoa", "multi-SPIQ")
+  list(file = energy_csv(r), label = glue("{p} (Week{r$week})"),
+       col = c(P1 = "blue", P2 = "red", P3 = "purple")[[p]], ground = r$ground_energy)
+})
+plot_energy_curves(spiq_curves, normalise = TRUE, main = "New formulation, multi-start SPIQ: P1-P3")
+```
+
+# 5. Old formulation (q2o), multi-start SPIQ (Week93–95)
+The same runs as `seeded-multi-spiq.rmd`, repeated here so their ratios feed the tables in section 6.
+P3's target is 39 because Week95 was scored with the old cost checker; it is the same plan as 29.
+
+## P1 (Week93)
+```{r}
+readout_boxplots("P1", "q2o", "multi-SPIQ")
+```
+
+## P2 (Week94)
+```{r}
+readout_boxplots("P2", "q2o", "multi-SPIQ")
+```
+
+## P3 (Week95)
+```{r}
+readout_boxplots("P3", "q2o", "multi-SPIQ")
+```
+
+# 6. New formulation (qaoa), single-start SPIQ (Week105–107)
+One GA search, one starting point, one QAOA run.
+
+## P1 (Week105)
+```{r}
+readout_boxplots("P1", "qaoa", "single-SPIQ")
+```
+```{r}
+r <- run_of("P1", "qaoa", "single-SPIQ")
+energy_values <- plot_energy_from_csv(energy_csv(r), baseline = r$ground_energy)
+```
+
+## P2 (Week106)
+```{r}
+readout_boxplots("P2", "qaoa", "single-SPIQ")
+```
+```{r}
+r <- run_of("P2", "qaoa", "single-SPIQ")
+energy_values <- plot_energy_from_csv(energy_csv(r), baseline = r$ground_energy)
+```
+
+## P3 (Week107)
+```{r}
+readout_boxplots("P3", "qaoa", "single-SPIQ")
+```
+```{r}
+r <- run_of("P3", "qaoa", "single-SPIQ")
+energy_values <- plot_energy_from_csv(energy_csv(r), baseline = r$ground_energy)
+```
+
+## All three workloads together (new formulation, single-start SPIQ)
+```{r}
+single_curves <- lapply(c("P1", "P2", "P3"), function(p) {
+  r <- run_of(p, "qaoa", "single-SPIQ")
+  list(file = energy_csv(r), label = glue("{p} (Week{r$week})"),
+       col = c(P1 = "blue", P2 = "red", P3 = "purple")[[p]], ground = r$ground_energy)
+})
+plot_energy_curves(single_curves, normalise = TRUE, main = "New formulation, single-start SPIQ: P1-P3")
+```
+
+# 7. Comparisons
+
+```{r}
+# All recorded ratios with readable factor levels
+all_ratios <- do.call(rbind, ratio_rows) %>%
+  mutate(decoding = if_else(used_fallback, "fallback", "raw"),
+         stage = factor(stage, levels = c("first iteration", "final")),
+         formulation = factor(formulation, levels = c("q2o", "qaoa")),
+         init = factor(init, levels = c("random", "single-SPIQ", "multi-SPIQ")))
+
+# Bar chart of optimal ratios; fill_col is the column being compared (formulation or init)
+ratio_bars <- function(df, fill_col, values, title) {
+  ggplot(df, aes(x = problem, y = optimal_ratio, fill = .data[[fill_col]])) +
+    geom_col(position = position_dodge(width = 0.8), width = 0.75) +
+    geom_text(aes(label = sprintf("%.3f", optimal_ratio)),
+              position = position_dodge(width = 0.8), vjust = -0.3, size = 3) +
+    facet_grid(stage ~ decoding) +
+    scale_fill_manual(values = values) +
+    theme_bw() +
+    labs(x = "Workload", y = "Optimal ratio", fill = fill_col, title = title)
+}
+spiq_energy <- summarise_energy(runs %>% filter(init == "multi-SPIQ"))
+all_energy <- summarise_energy(runs)
+```
+
+## 7.1 Multi-start SPIQ: old vs new formulation
+```{r}
+all_ratios %>%
+  filter(init == "multi-SPIQ") %>%
+  select(problem, stage, decoding, formulation, optimal_ratio) %>%
+  pivot_wider(names_from = formulation, values_from = optimal_ratio) %>%
+  select(problem, stage, decoding, q2o, qaoa) %>%
+  arrange(problem, stage, decoding) %>%
+  knitr::kable(digits = 3, caption = "Optimal ratio, multi-start SPIQ: old (q2o, Week93-95) vs new (qaoa, Week102-104)")
+```
+```{r, fig.width=9, fig.height=6}
+ratio_bars(all_ratios %>% filter(init == "multi-SPIQ"), "formulation",
+           c(q2o = "grey55", qaoa = "steelblue"),
+           "Optimal ratio: old vs new formulation (multi-start SPIQ)")
+```
+```{r}
+knitr::kable(spiq_energy, digits = 3, caption = "Energies, multi-start SPIQ: old (q2o) vs new (qaoa) formulation")
+```
+```{r, fig.width=8, fig.height=4}
+ggplot(spiq_energy, aes(x = problem, y = coalesce(share_to_bottom, 0), fill = formulation)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.75) +
+  geom_text(aes(label = if_else(is.na(share_to_bottom), "started at ground", sprintf("%.2f", share_to_bottom))),
+            position = position_dodge(width = 0.8), vjust = -0.3, size = 3) +
+  scale_fill_manual(values = c(q2o = "grey55", qaoa = "steelblue")) +
+  coord_cartesian(ylim = c(0, 1)) +
+  theme_bw() +
+  labs(x = "Workload", y = "Share of the way to the ground state", fill = "Formulation",
+       title = "How far the optimizer got: old vs new formulation (multi-start SPIQ)")
+```
+
+For multi-start SPIQ the "start energy" is the SPIQ starting point of the winning start, so the share measures
+how much further QAOA went from an already-good start. With the new formulation the P1 and P3 SPIQ starts are
+already the exact ground state, so there is nothing left to go ("started at ground"); `gap_to_ground` is the
+energy still above the ground state at the end (raw units, so compare it only within one formulation).
+
+### P1
+```{r}
+plot_energy_curves(compare_curves("P1", "multi-SPIQ"), normalise = TRUE, main = "P1 multi-start SPIQ: old vs new formulation (normalized)")
+plot_energy_curves(compare_curves("P1", "multi-SPIQ"), normalise = FALSE, main = "P1 multi-start SPIQ: old vs new formulation (raw energy)")
+```
+
+### P2
+```{r}
+plot_energy_curves(compare_curves("P2", "multi-SPIQ"), normalise = TRUE, main = "P2 multi-start SPIQ: old vs new formulation (normalized)")
+plot_energy_curves(compare_curves("P2", "multi-SPIQ"), normalise = FALSE, main = "P2 multi-start SPIQ: old vs new formulation (raw energy)")
+```
+
+### P3
+```{r}
+plot_energy_curves(compare_curves("P3", "multi-SPIQ"), normalise = TRUE, main = "P3 multi-start SPIQ: old vs new formulation (normalized)")
+plot_energy_curves(compare_curves("P3", "multi-SPIQ"), normalise = FALSE, main = "P3 multi-start SPIQ: old vs new formulation (raw energy)")
+```
+
+## 7.2 New formulation: random vs single-start vs multi-start SPIQ
+Same formulation, so the raw energies are on the same scale. Single-start SPIQ runs one GA with the same seed as
+GA 0 of the multi-start search. On P1 and P3 it finds the same starting point as multi-start (whose best also came
+from GA 0); on P2 multi-start's best point came from GA 7.
+```{r}
+all_ratios %>%
+  filter(formulation == "qaoa") %>%
+  select(problem, stage, decoding, init, optimal_ratio) %>%
+  pivot_wider(names_from = init, values_from = optimal_ratio) %>%
+  select(problem, stage, decoding, random, `single-SPIQ`, `multi-SPIQ`) %>%
+  arrange(problem, stage, decoding) %>%
+  knitr::kable(digits = 3, caption = "Optimal ratio, new formulation: random (Week96-98) vs single-start SPIQ (Week105-107) vs multi-start SPIQ (Week102-104)")
+```
+```{r, fig.width=12, fig.height=6}
+ratio_bars(all_ratios %>% filter(formulation == "qaoa"), "init",
+           c(random = "grey55", `single-SPIQ` = "seagreen", `multi-SPIQ` = "darkorange"),
+           "Optimal ratio, new formulation: random vs single-start vs multi-start SPIQ")
+```
+```{r}
+knitr::kable(all_energy %>% filter(formulation == "qaoa") %>%
+               arrange(problem, factor(init, levels = levels(all_ratios$init))), digits = 3,
+             caption = "Energies, new formulation: random vs single-start vs multi-start SPIQ")
+```
+```{r}
+init_curves <- function(p) {
+  cols <- c(random = "blue", `single-SPIQ` = "darkgreen", `multi-SPIQ` = "red")
+  lapply(names(cols), function(i) {
+    r <- run_of(p, "qaoa", i)
+    list(file = energy_csv(r), label = glue("{i} (Week{r$week})"), col = cols[[i]], ground = r$ground_energy)
+  })
+}
+# All runs share one ground-state energy, so the raw plot draws the same dashed line three times
+for (p in c("P1", "P2", "P3")) {
+  plot_energy_curves(init_curves(p), normalise = FALSE, main = glue("{p} new formulation: random vs single- vs multi-start SPIQ"))
+}
+```
+
+## 7.3 Overview: every formulation and initialization
+```{r}
+all_ratios %>%
+  filter(stage == "final") %>%
+  select(problem, formulation, init, decoding, optimal_ratio) %>%
+  pivot_wider(names_from = decoding, values_from = optimal_ratio) %>%
+  left_join(all_energy %>% select(problem, formulation, init, week, gap_to_ground, share_to_bottom),
+            by = c("problem", "formulation", "init")) %>%
+  select(problem, init, formulation, week, raw, fallback, gap_to_ground, share_to_bottom) %>%
+  arrange(problem, init, formulation) %>%
+  knitr::kable(digits = 3, caption = "Final optimal ratio (raw / fallback decoding) and share of the way to the ground state, every run")
 ```

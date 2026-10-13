@@ -137,7 +137,8 @@ It was built for gate-based machines, but it isn't a better fit for QAOA.
 ## 8. To do
 - [x] Run `python3 test_qubo_formulation.py` in the container (from `base/`). It passes.
 - [x] Random-start QAOA with the new formulation (Week96–98). Results are in the log below.
-- [ ] Regenerate the SPIQ files for P1–P3 with the new formulation, then run SPIQ-started QAOA in the container. Compare the share of samples at the best plan against Week93–95. This is the fair comparison, since Week93–95 were SPIQ-started.
+- [x] SPIQ-started QAOA with the new formulation (Week102–104, same settings as Week93–95). Results are in the log below.
+- [ ] P2 still splits 50/50 between the best plan (315) and the second-best (465). Ideas: more SPIQ starts, or a slightly stronger cost term so the two plans are further apart in energy.
 - [ ] Later, only if needed: an exact-cost version, or special QAOA mixers that never leave the set of real plans (these need no penalty, but cost more qubits).
 
 ## 9. Experiment log
@@ -146,6 +147,8 @@ Newest first.
 
 | Date | Formulation | Problem | Result | Where |
 |---|---|---|---|---|
+| 2026-10-13 | qaoa, **single-start SPIQ** (one GA, seed 0, 2000 generations, one QAOA run) (Week105–107) | P1–P3 | Share at the best plan: **P1 1.000, P2 0.000, P3 1.000**. See "Single-start SPIQ" below. | `outputs/spiq/Week105–107` (+ `energy/`) |
+| 2026-10-12 | qaoa, **multi-start SPIQ**, same settings as Week93–95 (Week102–104) | P1–P3 | Share at the best plan: **P1 1.000, P2 0.503, P3 1.000** (old formulation: 0.507, 0.0001, 0.126). See "Multi-start SPIQ" below. | `outputs/multi-spiq/Week102–104` (+ `energy/`) |
 | 2026-10-12 | q2o, random start, same settings (Week99–101) | P1–P3 | The like-for-like old-formulation partner runs. See "Old vs new formulation" below. | `outputs/uninitialized/Week99–101` (+ `energy/`) |
 | 2026-10-12 | qaoa, **random start**, COBYLA, reps 2, max 1000 iterations | P1–P3 | See the table below. COBYLA stopped early (123–137 evaluations) far above the lowest possible energy, so a random start with only 4 angles does not reach the good plans, even though the formula now puts them at the bottom. | `outputs/uninitialized/Week96–98` (+ `energy/`) |
 | 2026-10-12 | qaoa (λ = 1.1 × largest log size) | P1–P3 | Exact energies: the lowest-energy bitstring is a real plan with the best cost in all three (15, 315, 29). | analysis only |
@@ -200,3 +203,53 @@ What this shows:
 - **Plain decoding gets better or stays level:** P1 0.129 → 0.220, P2 0.018 → 0.018, P3 0.022 → 0.036.
 - **Fallback decoding is mixed:** P3 improves (0.150 → 0.189), while P1 (0.470 → 0.252) and P2 (0.101 → 0.055) drop. Under the old formulation many samples are fake plans, and the fallback repair often turns those into good plans by luck. With the new formulation more samples are real but second-best plans, which the repair leaves alone.
 - **Neither random start gets most samples onto the best plan.** With only 4 angles and COBYLA stopping after about 120 evaluations, random-start QAOA is weak under both formulations. The bigger test is still SPIQ-started runs.
+
+### Multi-start SPIQ with the new formulation (2026-10-12)
+
+Same settings as Week93–95 (8 independent GA searches, 2000 generations, seed 0, energy window 0.25, 10 candidates, 3 QAOA starts, COBYLA up to 1000 evaluations, reps 2). Only the formulation differs. Week102 = P1, Week103 = P2, Week104 = P3.
+
+**Optimal ratio** (share of the 10,240 samples at the best plan; plain and fallback decoding gave the same numbers in every run):
+
+| Workload | Old formulation (Week93–95): start / end | **New formulation (Week102–104): start / end** | Rest of the samples (new) |
+|---|---|---|---|
+| P1 (best 15) | 0.502 / 0.507 | **1.000 / 1.000** | none |
+| P2 (best 315) | 0.000 / 0.0001 | **0.503 / 0.503** | 465 (49.6%), 600 (3 samples) |
+| P3 (best 29) | 0.121 / 0.126 | **1.000 / 1.000** | none |
+
+**Energies**:
+
+| Workload | Lowest possible | SPIQ start (winning start) | Best reached | Still above the bottom | Evaluations |
+|---|---|---|---|---|---|
+| P1 | 1.176 | 1.176 | 1.176 | **0** | 284 |
+| P2 | 3.653 | 3.741 | 3.739 | 0.085 | 1000 |
+| P3 | 2.334 | 2.334 | 2.334 | **0** | 991 |
+
+Old formulation, for comparison (its own scale): it ended 0.094 (P1), 0.784 (P2) and 9.65 (P3) above its lowest possible energy.
+
+What this shows:
+- **For P1 and P3 the SPIQ search already finds the exact answer.** The best Clifford starting point *is* the ground state, which is the best plan, so every sample is the best plan from the first step on. Under the old formulation the same search could only reach fake or mixed states, because the ground state was a fake plan (P1) or too hard to reach with 20 qubits (P3).
+- **P2 goes from almost 0% to 50% at the best plan.** The remaining 50% is the second-best plan (cost 465), which is now a real plan with an energy only 0.18 above the best (≈3.83 vs 3.65). The SPIQ start is an even mix of the two, and COBYLA could not shift the balance. The old formulation's fake 465 state (energy 4.77, below every real plan) is gone.
+- **The winning start was start0 (the best SPIQ point) in all three.** The other two starts ended higher (P1 1.321 / 1.188, P2 4.545 / 4.984, P3 3.808 / 2.884).
+- **Much faster.** Fewer qubits mean fewer SPIQ angles (18 / 64 / 64 instead of 40 / 116 / 268): the whole pipeline took about 0.9 h (P1) and 1.7 h (P2, P3), compared with 3–6.7 h for Week93–95.
+- **Random start vs SPIQ (same new formulation):** end share at the best plan 0.22 → 1.00 (P1), 0.018 → 0.503 (P2), 0.036 → 1.00 (P3). The starting point matters more than anything else here.
+
+Plots: `graphs/formulation.rmd` sections 4, 5 and 7.
+
+### Single-start SPIQ with the new formulation (2026-10-13)
+
+The original SPIQ: **one** GA search (seed 0, 2000 generations), **one** starting point, **one** QAOA run (COBYLA up to 1000 evaluations, reps 2). Week105 = P1, Week106 = P2, Week107 = P3. Everything else is the same as Week102–104.
+
+| Workload | Random (Week96–98): end | **Single-start SPIQ (Week105–107): start / end** | Multi-start SPIQ (Week102–104): end | Energy reached (single) | Lowest possible |
+|---|---|---|---|---|---|
+| P1 (best 15) | 0.220 | **1.000 / 1.000** | 1.000 | 1.176 | 1.176 |
+| P2 (best 315) | 0.018 | **0.000 / 0.000** | 0.503 | 5.100 | 3.653 |
+| P3 (best 29) | 0.036 | **1.000 / 1.000** | 1.000 | 2.334 | 2.334 |
+
+(Plain and fallback decoding agree in every single-start run.)
+
+What this shows:
+- **P1 and P3: one search is enough.** The single GA finds the same starting point as multi-start, which is the exact ground state (the best plan). This is expected: multi-start's best point on these two also came from GA 0, which uses the same seed.
+- **P2: one search is not enough.** The single GA's best point (energy 5.13) mixes plans with costs 465 (50%), 900 (25%) and 1350 (25%), and none with the best cost 315. COBYLA only lowered it to 5.10. Multi-start's best point came from a different GA (GA 7) and started at 3.74, already half on the best plan. So on P2 the extra independent searches are what make the difference.
+- **Run time:** about 7 min (P1) and 13 min (P2, P3), compared with 0.9–1.7 h for multi-start.
+
+Plots: `graphs/formulation.rmd` sections 6 and 7.2.
