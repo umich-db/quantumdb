@@ -5,6 +5,49 @@ See `RESULTS_INDEX.md` for which week folder holds which run.
 
 ---
 
+## 2026-10-13: Single-start SPIQ with the new formulation (Week105–107) and its plots
+
+**Files:** `graphs/formulation.rmd`, docs. No pipeline code changes.
+
+**What changed**
+- `formulation.rmd` has a new section 6 for single-start SPIQ (boxplots, energy over iterations, all three workloads on one normalized plot). The comparisons are now section 7.
+- Section 7.2 now compares random, single-start and multi-start SPIQ under the new formulation: ratio table and bars, an energy table, and raw energy curves.
+- The overview table (7.3) includes the single-start runs.
+
+**Why:** the user asked for the single-start SPIQ baseline with the new formulation, with the same plots as before.
+
+**Checks**
+- All three runs loaded SPIQ (`[diag]` rel_err ≤ 1e-15) and wrote `pcirc.qpy`.
+- `formulation.rmd` knits without errors (98 figures).
+- Results: optimal ratio P1 1.000, P2 0.000, P3 1.000 (`docs/problem-formulation.md` §9).
+
+---
+
+## 2026-10-12: Multi-start SPIQ with the new formulation (Week102–104) and its plots
+
+**Files:** `graphs/formulation.rmd` (sections 4–6), docs. No code changes to the pipeline.
+
+**What changed**
+- `formulation.rmd` gained:
+  - section 4: Week102–104 boxplots, the winning run's energy and every start's energy log;
+  - section 5: Week93–95 boxplots;
+  - section 6: multi-SPIQ old vs new, new-formulation random vs multi-SPIQ, and one overview table of every run.
+- The energy tables have a new `gap_to_ground` column. `share_to_bottom` is NA when a run starts at the ground state, because it is 0/0 there; Week102 and Week104 start at the ground state.
+
+**Why:** the user asked for the like-for-like comparison of Week93–95 under the new formulation.
+
+**Setup found along the way (not changed in the repo):** the SPIQ step must write QPY that the QAOA environment (qiskit-terra 0.19.2) can read.
+- `requirements-spiq.txt` pins qiskit ≥ 0.44. Installed that way, the QPY files are unreadable, and `IBMQExperiments.py` silently falls back to random-start QAOA.
+- The working setup is the QAOA environment plus only `stim==1.16.0` and `pygad==3.3.1`, installed with `pip --target /home/repro/spiq-site`.
+- The container driver used for these runs (`logs/run_diverse.sh` inside the container, not in the repo) stops if `pcirc.qpy` is missing, so a silent fallback cannot go unnoticed.
+
+**Checks**
+- All three runs loaded SPIQ ([diag] rel_err ≤ 1.3e-15) and wrote `pcirc.qpy`.
+- `formulation.rmd` knits without errors (82 figures).
+- The results are in `docs/problem-formulation.md` §9: optimal ratio P1 1.000, P2 0.503, P3 1.000.
+
+---
+
 ## 2026-10-12: Formulation comparison plots (`graphs/formulation.rmd`)
 
 **Files:** `graphs/formulation.rmd` (new)
