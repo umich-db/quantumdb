@@ -15,7 +15,8 @@ Classical pre-pass that runs in its own environment (qiskit-aer / qiskit-algorit
      qiskit Statevector.
 
 Outputs (in --out_dir): spiq_initial_point_<stub>.json, spiq_pcirc_<stub>.qpy and
-spiq_trace_<stub>.txt, with <stub> = input<idx>_reps<p>_<R>rel_<P>pred.
+spiq_trace_<stub>.txt. The stub identifies either a bundled input index or a
+custom problem label, plus QAOA depth, relation count, and predicate count.
 
 Usage (from base/):
     python3 spiq_initialization.py --input_idx 0 --reps 2 --n_gens 200
@@ -24,6 +25,7 @@ Usage (from base/):
 import os
 import re
 import json
+import hashlib
 import argparse
 import numpy as np
 import stim
@@ -32,7 +34,7 @@ import Scripts.ProblemGenerator as ProblemGenerator
 import Scripts.QUBOGenerator as QUBOGenerator
 from qiskit.circuit import ParameterExpression
 from qiskit.converters import circuit_to_dag
-from qiskit.algorithms import NumPyMinimumEigensolver
+from qiskit_algorithms import NumPyMinimumEigensolver
 
 try:
     from qiskit.qpy import dump as qpy_dump
@@ -124,11 +126,53 @@ def _build_relaxed_name_to_rep(pre_relax_circ):
     return name_to_rep
 
 
-def build_problem(input_idx: int):
-    """Load problem folder <input_idx>_predicates and build its QUBO.
+def _validate_problem(card, pred, pred_sel):
+    """Validate cardinalities, predicate endpoints, and selectivities."""
+    if not isinstance(card, list) or len(card) < 3:
+        raise ValueError("card must be a list with at least three positive cardinalities")
+    if len(pred) != len(pred_sel):
+        raise ValueError("pred and pred_sel must have equal lengths")
+    if any(float(value) <= 0 for value in card):
+        raise ValueError("all cardinalities must be positive")
+    for edge, selectivity in zip(pred, pred_sel):
+        if not isinstance(edge, (list, tuple)) or len(edge) != 2:
+            raise ValueError(f"predicate must be a pair, got {edge!r}")
+        left, right = edge
+        if not isinstance(left, int) or not isinstance(right, int):
+            raise ValueError(f"predicate endpoints must be integers, got {edge!r}")
+        if not (0 <= left < len(card) and 0 <= right < len(card)) or left == right:
+            raise ValueError(f"invalid predicate endpoints: {edge!r}")
+        if not 0 < float(selectivity) <= 1:
+            raise ValueError(f"selectivity must be in (0, 1], got {selectivity!r}")
+
+
+def build_problem(input_idx: int | None = None, problem_json: str | None = None):
+    """Load a bundled or custom problem and build its QUBO.
 
     Returns (qubo, card, pred, pred_sel, penalty_weight).
     """
+    if problem_json:
+        with open(problem_json) as handle:
+            loaded = json.load(handle)
+        try:
+            card = loaded["card"]
+            pred = loaded["pred"]
+            pred_sel = loaded["pred_sel"]
+        except KeyError as exc:
+            raise ValueError(
+                "Custom problem JSON must contain card, pred, and pred_sel"
+            ) from exc
+        _validate_problem(card, pred, pred_sel)
+        qubo, penalty_weight = QUBOGenerator.generate_IBMQ_QUBO_for_left_deep_trees_v2(
+            card,
+            pred,
+            pred_sel,
+        )
+        return qubo, card, pred, pred_sel, penalty_weight
+
+    if input_idx is None:
+        raise ValueError("Provide either input_idx or problem_json")
+
     json_path = os.path.join(
         os.path.dirname(__file__),
         f"ExperimentalAnalysis/IBMQ/QPUPerformance/Problems/JSON/{input_idx}_predicates",
@@ -142,6 +186,7 @@ def build_problem(input_idx: int):
         pred_sel,
     )
 
+    _validate_problem(card, pred, pred_sel)
     return qubo, card, pred, pred_sel, penalty_weight
 
 
@@ -327,6 +372,7 @@ def run_spiq_initialization(
     n_candidates: int = 1,
     energy_window: float = 0.25,
     seed: int = 0,
+    verify_qiskit_statevector: bool = True,
 ):
     """Run the clapton Clifford-space GA and convert its best point into QAOA initial points.
 
@@ -341,6 +387,7 @@ def run_spiq_initialization(
             (see _select_diverse).
         energy_window: candidates must satisfy E <= E_best + energy_window * |E_best|.
         seed: base seed; parallel GA m uses seed + m.
+        verify_qiskit_statevector: validate the exported point with dense simulation.
 
     Returns:
         dict with initial_point (2*reps angles), relaxed_initial_point (one angle per
@@ -359,9 +406,12 @@ def run_spiq_initialization(
 
     print("Length of stim_circ:", len(stim_circ.gates))
 
+    # Qiskit 0.45 returns SparsePauliOp directly; older releases wrapped it in
+    # a PauliSumOp with a ``primitive`` attribute.
+    pauli_op = getattr(op, "primitive", op)
     # clapton expects Pauli strings with qubit 0 first; qiskit labels are qubit 0 last.
-    paulis = op.primitive.paulis.to_labels()
-    coeffs = op.primitive.coeffs.real
+    paulis = pauli_op.paulis.to_labels()
+    coeffs = pauli_op.coeffs.real
     reversed_paulis = [p[::-1] for p in paulis]
 
     if err is not None:
@@ -481,54 +531,73 @@ def run_spiq_initialization(
         f"{diversity['candidate_min_hamming']}; source GAs: {diversity['candidate_source_ga']}"
     )
 
-    # Self-check: pcirc bound to relaxed_initial_point must reproduce stim's Clifford energy.
-    try:
-        from qiskit.quantum_info import Statevector
+    verification = {
+        "status": "skipped",
+        "reason": "disabled by --skip-statevector-verification",
+    }
+    if verify_qiskit_statevector:
+        try:
+            from qiskit.quantum_info import Statevector
 
-        def _ising_expectation(theta_vec):
-            bound = pcirc.assign_parameters(
-                {p: float(v) for p, v in zip(pcirc.parameters, theta_vec)},
-                inplace=False,
+            def _ising_expectation(theta_vec):
+                bound = pcirc.assign_parameters(
+                    {p: float(v) for p, v in zip(pcirc.parameters, theta_vec)},
+                    inplace=False,
+                )
+                sv = Statevector.from_instruction(bound)
+                return float(np.real(sv.expectation_value(op)))
+
+            e_qiskit_ising = _ising_expectation(relaxed_initial_point)
+            e_qiskit_qubo = float(e_qiskit_ising + ising_offset)
+            rel_err = abs(e_qiskit_ising - energy_best_ising) / max(
+                abs(energy_best_ising),
+                1e-9,
             )
-            sv = Statevector.from_instruction(bound)
-            return float(np.real(sv.expectation_value(op)))
 
-        e_qiskit_ising = _ising_expectation(relaxed_initial_point)
-        e_qiskit_qubo = float(e_qiskit_ising + ising_offset)
-
-        rel_err = abs(e_qiskit_ising - energy_best_ising) / max(
-            abs(energy_best_ising),
-            1e-9,
-        )
-
-        print(
-            f"[diag] stim energy_best Ising = {energy_best_ising:.6f}; "
-            f"qiskit Statevector <H>_Ising at relaxed_initial_point = "
-            f"{e_qiskit_ising:.6f}; "
-            f"qiskit Statevector <H>_QUBO = {e_qiskit_qubo:.6f}; "
-            f"offset = {float(ising_offset):.6f}; "
-            f"rel_err = {rel_err:.3e}"
-        )
-
-        if rel_err > 1e-4:
             print(
-                "[diag] WARNING: qiskit pcirc does not reproduce stim's "
-                "Clifford state. Per-gate details (first 20):"
+                f"[diag] stim energy_best Ising = {energy_best_ising:.6f}; "
+                f"qiskit Statevector <H>_Ising at relaxed_initial_point = "
+                f"{e_qiskit_ising:.6f}; "
+                f"qiskit Statevector <H>_QUBO = {e_qiskit_qubo:.6f}; "
+                f"offset = {float(ising_offset):.6f}; "
+                f"rel_err = {rel_err:.3e}"
             )
 
-            for i, name in enumerate(relaxed_param_names[:20]):
+            if rel_err > 1e-4:
                 print(
-                    f"    [{i:3d}] name={name!r:40s} "
-                    f"applied_mult={applied_multipliers.get(name, 1.0):+.4f} "
-                    f"original_mult={angle_multipliers.get(name, 1.0):+.4f} "
-                    f"k={int(ks_best[i])} "
-                    f"theta={relaxed_initial_point[i]:+.4f}"
+                    "[diag] ERROR: qiskit pcirc does not reproduce stim's "
+                    "Clifford state. Per-gate details (first 20):"
+                )
+                for i, name in enumerate(relaxed_param_names[:20]):
+                    print(
+                        f"    [{i:3d}] name={name!r:40s} "
+                        f"applied_mult={applied_multipliers.get(name, 1.0):+.4f} "
+                        f"original_mult={angle_multipliers.get(name, 1.0):+.4f} "
+                        f"k={int(ks_best[i])} "
+                        f"theta={relaxed_initial_point[i]:+.4f}"
+                    )
+                raise ValueError(
+                    "SPIQ/Qiskit statevector verification exceeded the "
+                    f"relative-error tolerance: {rel_err:.3e} > 1.000e-04"
                 )
 
-    except Exception as exc:
+            verification = {
+                "status": "passed",
+                "relative_error": float(rel_err),
+                "relative_error_tolerance": 1e-4,
+                "qiskit_ising_energy": e_qiskit_ising,
+                "qiskit_qubo_energy": e_qiskit_qubo,
+            }
+        except Exception as exc:
+            raise RuntimeError(
+                "SPIQ/Qiskit statevector verification failed; use "
+                "--skip-statevector-verification only when this dense check "
+                "is intentionally infeasible"
+            ) from exc
+    else:
         print(
-            f"[diag] statevector verification unavailable ({exc!r}); "
-            f"skipping internal sanity check."
+            "[diag] statevector verification explicitly skipped by "
+            "--skip-statevector-verification."
         )
 
     neg_mults = {
@@ -588,6 +657,7 @@ def run_spiq_initialization(
         "relaxed_initial_points": relaxed_initial_points,
         "candidate_energies": candidate_energies,
         "candidate_ks": candidate_ks,
+        "statevector_verification": verification,
         **diversity,
     }
 
@@ -625,6 +695,14 @@ def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--input_idx", type=int, default=0, help="Problem index")
+    parser.add_argument(
+        "--problem-json",
+        help="Custom JSON with card, pred, and pred_sel; overrides --input_idx",
+    )
+    parser.add_argument(
+        "--label",
+        help="Stable output label for a custom problem (defaults to its filename stem)",
+    )
     parser.add_argument("--reps", type=int, default=1, help="QAOA reps / p")
     parser.add_argument("--n_gens", type=int, default=200, help="SPIQ generation budget")
     parser.add_argument("--n_proc", type=int, default=32, help="Number of processes for SPIQ")
@@ -636,6 +714,16 @@ def main():
     parser.add_argument("--energy_window", type=float, default=0.25,
                         help="Multi-start candidates must have E <= E_best + energy_window*|E_best| (Ising)")
     parser.add_argument("--seed", type=int, default=0, help="Base GA seed; parallel GA m uses seed + m")
+    parser.add_argument(
+        "--skip-exact-ground-state",
+        action="store_true",
+        help="Skip the exponential exact QUBO ground-state reference (for larger workloads).",
+    )
+    parser.add_argument(
+        "--skip-statevector-verification",
+        action="store_true",
+        help="Skip the optional dense CPU statevector sanity check of the SPIQ point.",
+    )
 
     parser.add_argument(
         "--out_dir",
@@ -649,13 +737,22 @@ def main():
     os.makedirs(args.out_dir, exist_ok=True)
 
     qubo, card, pred, pred_sel, penalty_weight = build_problem(
-        input_idx=args.input_idx,
+        input_idx=None if args.problem_json else args.input_idx,
+        problem_json=args.problem_json,
     )
 
-    exact_ground_state = evaluate_exact_ground_state_energy(qubo)
+    exact_ground_state = (
+        None if args.skip_exact_ground_state else evaluate_exact_ground_state_energy(qubo)
+    )
 
     shape_suffix = f"{len(card)}rel_{len(pred)}pred"
-    base_stub = f"input{args.input_idx}_reps{args.reps}_{shape_suffix}"
+    if args.problem_json:
+        default_label = os.path.splitext(os.path.basename(args.problem_json))[0]
+        label = args.label or default_label
+        safe_label = re.sub(r"[^A-Za-z0-9_.-]+", "_", label)
+        base_stub = f"{safe_label}_reps{args.reps}_{shape_suffix}"
+    else:
+        base_stub = f"input{args.input_idx}_reps{args.reps}_{shape_suffix}"
 
     out_file = os.path.join(
         args.out_dir,
@@ -674,6 +771,7 @@ def main():
         n_candidates=args.n_candidates,
         energy_window=args.energy_window,
         seed=args.seed,
+        verify_qiskit_statevector=not args.skip_statevector_verification,
     )
 
     json_out = os.path.join(
@@ -689,13 +787,16 @@ def main():
     with open(pcirc_qpy, "wb") as fqpy:
         qpy_dump(result["pcirc"], fqpy)
 
+    with open(pcirc_qpy, "rb") as fqpy:
+        pcirc_qpy_sha256 = hashlib.sha256(fqpy.read()).hexdigest()
+
     payload = {
-        "input_idx": args.input_idx,
+        "input_idx": args.input_idx if not args.problem_json else None,
         "reps": args.reps,
         "n_gens": args.n_gens,
         "problem_input": {
-            "input_idx": args.input_idx,
-            "source": (
+            "input_idx": args.input_idx if not args.problem_json else None,
+            "source": args.problem_json or (
                 f"ExperimentalAnalysis/IBMQ/QPUPerformance/Problems/JSON/"
                 f"{args.input_idx}_predicates"
             ),
@@ -709,7 +810,8 @@ def main():
         "initial_point": result["initial_point"],
         "relaxed_initial_point": result["relaxed_initial_point"],
         "relaxed_param_names": result["relaxed_param_names"],
-        "pcirc_qpy": pcirc_qpy,
+        "pcirc_qpy": os.path.basename(pcirc_qpy),
+        "pcirc_qpy_sha256": pcirc_qpy_sha256,
 
         # Raw Ising value. Keep for IBMQExperiments.py sanity check.
         "energy_best": result["energy_best"],
@@ -733,13 +835,16 @@ def main():
                                   "candidate_min_hamming", "candidate_source_ga")},
         "spiq_trace_file": out_file,
         "exact_ground_state": exact_ground_state,
+        "exact_ground_state_skipped": bool(args.skip_exact_ground_state),
+        "qiskit_statevector_verification_skipped": bool(args.skip_statevector_verification),
+        "qiskit_statevector_verification": result["statevector_verification"],
     }
 
     with open(json_out, "w") as f:
         json.dump(payload, f, indent=2)
 
     print("\n===== SPIQ INITIALIZATION COMPLETE =====")
-    print(f"Input index          : {args.input_idx}")
+    print(f"Input source         : {args.problem_json or args.input_idx}")
     print(f"Reps                 : {args.reps}")
     print(f"Best energy Ising    : {result['energy_best']}")
     print(f"Ising offset         : {result['ising_offset']}")
