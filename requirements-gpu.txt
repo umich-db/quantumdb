@@ -1,0 +1,10 @@
+# Isolated environment for experiments/gpu_qaoa_refinement.py.
+# Keep it separate from the CPU-SPIQ environment in requirements-spiq.txt.
+qiskit==1.3.2
+qiskit-aer-gpu==0.15.1
+qiskit-optimization==0.6.1
+docplex==2.32.264
+numpy==1.26.4
+scipy==1.14.1
+dimod==0.12.3
+qubovert==1.2.4

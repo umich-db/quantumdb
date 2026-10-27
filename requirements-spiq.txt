@@ -2,11 +2,12 @@
 # Aer / Algorithms versions are the ones reported in the paper (§4); the rest are the
 # direct imports of spiq_initialization.py and clapton/. Needs a qiskit < 1.0 release,
 # since spiq_initialization.py imports qiskit.algorithms.
+qiskit==0.45.3
 qiskit-aer==0.13.3
 qiskit-algorithms==0.3.1
-qiskit-optimization
-docplex
-stim
+qiskit-optimization==0.6.1
+docplex==2.32.264
+stim==1.16.0
 pygad==3.3.1
-psutil
-numpy
+psutil==7.2.2
+numpy==1.26.4
