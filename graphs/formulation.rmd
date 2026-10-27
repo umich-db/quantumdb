@@ -53,7 +53,9 @@ runs <- tribble(
   "P3", "qaoa", "multi-SPIQ", "multi-spiq",    104, 2, 2.3344538, 29,
   "P1", "qaoa", "single-SPIQ", "spiq",         105, 0, 1.1760913, 15,
   "P2", "qaoa", "single-SPIQ", "spiq",         106, 1, 3.6532125, 315,
-  "P3", "qaoa", "single-SPIQ", "spiq",         107, 2, 2.3344538, 29
+  "P3", "qaoa", "single-SPIQ", "spiq",         107, 2, 2.3344538, 29,
+  "P4", "qaoa", "single-SPIQ", "spiq",         108, 3, 4.9084850, 165,   # 5 tables, 15 qubits
+  "P5", "qaoa", "single-SPIQ", "spiq",         109, 4, 8.3398488, 1605   # 6 tables, 24 qubits
 )
 
 # suffix "" = the run's energy log (the winning start for multi-SPIQ); "_start0" etc. = one start
@@ -200,7 +202,9 @@ plot_energy_from_csv <- function(file_path, baseline = NULL) {
 plot_energy_curves <- function(curves, normalise = FALSE, main = "Energy vs Iteration (QAOA)") {
   dfs <- lapply(curves, function(cv) {
     df <- read.csv(cv$file)
-    if (normalise) df$energy <- (df$energy - cv$ground) / (df$energy[1] - cv$ground)
+    # A run that starts at the ground state (0/0) is drawn as its raw gap to the ground state, i.e. at ~0
+    den <- df$energy[1] - cv$ground
+    if (normalise) df$energy <- (df$energy - cv$ground) / (if (den > 1e-9) den else 1)
     df
   })
   refs <- if (normalise) 0 else sapply(curves, `[[`, "ground")
@@ -229,7 +233,10 @@ plot_energy_curves <- function(curves, normalise = FALSE, main = "Energy vs Iter
 
   par(mar = c(0, 0, 0, 0))
   plot.new()
-  labels <- sapply(curves, `[[`, "label")
+  labels <- sapply(seq_along(curves), function(k) {
+    starts_at_ground <- read.csv(curves[[k]]$file)$energy[1] - curves[[k]]$ground <= 1e-9
+    if (normalise && starts_at_ground) paste(curves[[k]]$label, "(starts at ground: raw gap)") else curves[[k]]$label
+  })
   cols <- sapply(curves, `[[`, "col")
   ref_labels <- if (normalise) "ground state energy" else paste(labels, "ground")
   ref_cols <- if (normalise) "green3" else cols
@@ -659,7 +666,7 @@ ratio_bars(all_ratios %>% filter(formulation == "qaoa"), "init",
            "Optimal ratio, new formulation: random vs single-start vs multi-start SPIQ")
 ```
 ```{r}
-knitr::kable(all_energy %>% filter(formulation == "qaoa") %>%
+knitr::kable(all_energy %>% filter(formulation == "qaoa", problem %in% c("P1", "P2", "P3")) %>%
                arrange(problem, factor(init, levels = levels(all_ratios$init))), digits = 3,
              caption = "Energies, new formulation: random vs single-start vs multi-start SPIQ")
 ```
@@ -688,4 +695,132 @@ all_ratios %>%
   select(problem, init, formulation, week, raw, fallback, gap_to_ground, share_to_bottom) %>%
   arrange(problem, init, formulation) %>%
   knitr::kable(digits = 3, caption = "Final optimal ratio (raw / fallback decoding) and share of the way to the ground state, every run")
+```
+
+# 8. Larger problems: 5- and 6-table joins (new formulation, single-start SPIQ)
+
+Same single-start SPIQ settings as Week105–107. The qubit count is R × (R − 2) for R tables, so 5 tables need
+15 qubits and 6 tables need 24. These problems are too big for the old formulation within 25 qubits.
+
+| Workload | Folder | Tables (rows in each) | Join conditions (selectivity) | Qubits | Best plan cost | Lowest possible energy |
+|---|---|---|---|---|---|---|
+| P4 (Week108) | `3_predicates` | 10, 15, 20, 30, 50 | 0–1 (0.1), 1–2 (0.2), 2–3 (0.1), 3–4 (0.3), 1–3 (0.5) | 15 | 165 | 4.908 |
+| P5 (Week109) | `4_predicates` | 10, 15, 20, 30, 50, 100 | 0–1 (0.1), 1–2 (0.2), 2–3 (0.1), 3–4 (0.3), 4–5 (0.1), 1–4 (0.5), 0–5 (0.4) | 24 | 1605 | 8.340 |
+
+## P4: 5 tables, 15 qubits (Week108)
+```{r}
+readout_boxplots("P4", "qaoa", "single-SPIQ")
+```
+```{r}
+r <- run_of("P4", "qaoa", "single-SPIQ")
+energy_values <- plot_energy_from_csv(energy_csv(r), baseline = r$ground_energy)
+```
+
+## P5: 6 tables, 24 qubits (Week109)
+```{r}
+readout_boxplots("P5", "qaoa", "single-SPIQ")
+```
+```{r}
+r <- run_of("P5", "qaoa", "single-SPIQ")
+energy_values <- plot_energy_from_csv(energy_csv(r), baseline = r$ground_energy)
+```
+
+## Summary: every workload with single-start SPIQ
+```{r}
+single_all <- c("P1", "P2", "P3", "P4", "P5")
+do.call(rbind, ratio_rows) %>%
+  filter(init == "single-SPIQ", formulation == "qaoa") %>%
+  mutate(decoding = if_else(used_fallback, "fallback", "raw")) %>%
+  select(problem, stage, decoding, optimal_ratio) %>%
+  pivot_wider(names_from = c(stage, decoding), values_from = optimal_ratio) %>%
+  left_join(summarise_energy(runs %>% filter(init == "single-SPIQ")) %>%
+              select(problem, week, evaluations, ground_energy, start_energy, best_energy, gap_to_ground),
+            by = "problem") %>%
+  mutate(qubits = c(P1 = 3, P2 = 8, P3 = 8, P4 = 15, P5 = 24)[problem]) %>%
+  relocate(week, qubits, .after = problem) %>%
+  knitr::kable(digits = 3, caption = "New formulation, single-start SPIQ: optimal ratio and energies for P1-P5")
+```
+```{r}
+plot_energy_curves(lapply(single_all, function(p) {
+  r <- run_of(p, "qaoa", "single-SPIQ")
+  list(file = energy_csv(r), label = glue("{p} (Week{r$week})"),
+       col = c(P1 = "blue", P2 = "red", P3 = "purple", P4 = "darkgreen", P5 = "orange")[[p]],
+       ground = r$ground_energy)
+}), normalise = TRUE, main = "New formulation, single-start SPIQ: P1-P5 (normalized)")
+```
+
+# 9. Old vs new formulation on P4/P5: SPIQ starting points only
+
+P4 and P5 need 30 and 52 qubits with the old (q2o) formulation, too many to simulate QAOA. So this compares only the single-start SPIQ starting points (one GA, seed 0, 2000 generations, reps 2). Each starting point is a Clifford state, and `base/spiq_sample.py` samples it 10240 times with stim and decodes the samples like a QAOA readout. The new-formulation points are the ones Week108/109 started QAOA from. The old-formulation points are Week110 (P4) and Week111 (P5), with no QAOA run. Energies are on each formulation's own scale, so compare costs, not energies.
+
+```{r}
+# SPIQ starting points sampled with stim: one readout CSV + the SPIQ JSON per (problem, formulation)
+starts <- tribble(
+  ~problem, ~formulation, ~week, ~input_idx, ~R, ~P, ~target,
+  "P4", "qaoa", 108, 3, 5, 5, 165,
+  "P4", "q2o",  110, 3, 5, 5, 165,
+  "P5", "qaoa", 109, 4, 6, 7, 1605,
+  "P5", "q2o",  111, 4, 6, 7, 1605
+) %>% mutate(stub = glue("{root}/spiq_init_outputs/single_Week{week}/spiq_initial_point_input{input_idx}_reps2_{R}rel_{P}pred_{formulation}")) %>%
+  filter(file.exists(glue("{stub}_readout.csv")))  # a run still in progress is left out until its files are pulled
+
+# The readout's all_solutions table, one row per sample and decoding; bitstrings kept as text
+read_start <- function(s) {
+  lines <- readLines(glue("{s$stub}_readout.csv"), warn = FALSE)
+  lines <- lines[(grep("^#\\s*all_solutions", lines) + 1):length(lines)]
+  read_csv(I(paste(lines[lines != ""], collapse = "\n")), col_types = cols(bitstring = col_character()))
+}
+
+# Valid plan: column j of the R x (R-2) table block has j+2 ones and contains column j-1
+is_valid <- function(bits, R) {
+  J <- R - 2
+  sapply(strsplit(bits, ""), function(b) {
+    v <- matrix(as.integer(b[1:(R * J)]), nrow = R, byrow = TRUE)
+    all(colSums(v) == 2:(R - 1)) && all(v[, -J, drop = FALSE] <= v[, -1, drop = FALSE])
+  })
+}
+```
+
+## Readouts of the starting points
+```{r}
+for (k in seq_len(nrow(starts))) {
+  s <- starts[k, ]
+  for (fb in c(FALSE, TRUE)) {
+    print(glue("{s$problem}, {s$formulation}, SPIQ start (Week{s$week}), used_fallback={fb}; optimal cost {s$target}"))
+    res <- cost_energy_boxplot_prob(glue("{s$stub}_readout.csv"), show_points = FALSE, fallback = fb, target = s$target,
+                                    opt = "none (SPIQ start)", label = glue("{s$problem} {s$formulation} SPIQ start (Week{s$week}): "))
+  }
+}
+```
+
+## Summary
+```{r}
+start_summary <- bind_rows(lapply(seq_len(nrow(starts)), function(k) {
+  s <- starts[k, ]
+  df <- read_start(s)
+  js <- jsonlite::fromJSON(glue("{s$stub}.json"))
+  raw <- df %>% filter(!used_fallback)
+  fb <- df %>% filter(used_fallback)
+  tibble(problem = s$problem, formulation = s$formulation, week = s$week,
+         qubits = nchar(raw$bitstring[1]), angles = length(js$ks_best_raw),
+         valid_plan = mean(is_valid(raw$bitstring, s$R)),
+         best_raw = mean(raw$cost == s$target), best_fallback = mean(fb$cost == s$target),
+         median_cost_raw = median(raw$cost), median_cost_fallback = median(fb$cost),
+         distinct_states = n_distinct(raw$bitstring))
+}))
+knitr::kable(start_summary, digits = 3,
+             caption = "SPIQ starting points, old (q2o) vs new (qaoa) formulation: share of 10240 samples that are valid plans / at the best plan")
+```
+
+For reference, 10240 uniformly random bitstrings decode to the best plan this often: P4 0.004 raw / 0.145 fallback, and P5 0.001 raw / 0.023 fallback. Only the table bits are decoded, so this baseline is the same for both formulations.
+```{r, fig.width=9, fig.height=4}
+start_summary %>%
+  select(problem, formulation, valid_plan, best_raw, best_fallback) %>%
+  pivot_longer(-c(problem, formulation), names_to = "measure", values_to = "share") %>%
+  ggplot(aes(x = measure, y = share, fill = formulation)) +
+  geom_col(position = "dodge") +
+  geom_text(aes(label = sprintf("%.3f", share)), position = position_dodge(width = 0.9), vjust = -0.3, size = 3) +
+  facet_wrap(~problem) +
+  theme_bw() +
+  labs(x = NULL, y = "share of samples", title = "SPIQ starting points: old (q2o) vs new (qaoa) formulation")
 ```

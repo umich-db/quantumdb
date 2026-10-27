@@ -5,6 +5,46 @@ See `RESULTS_INDEX.md` for which week folder holds which run.
 
 ---
 
+## 2026-10-21: Old vs new formulation on P4/P5, comparing SPIQ starting points only (Week110–111)
+
+**Files:** `base/config.py`, `base/spiq_initialization.py`, `base/spiq_sample.py` (new), `logs/run_spiq_only.sh` (new), `graphs/formulation.rmd`, docs.
+
+**What changed**
+- `config.py`: the `QUBO_FORMULATION` environment variable overrides `qubo-formulation` for one run, so q2o can run without editing the file.
+- `spiq_initialization.py`: above `MAX_EXACT_QUBITS = 25` it skips the exact ground-state solve and the statevector self-check. Both need a 2^n vector (16 GB at 30 qubits). The JSON then stores `exact_ground_state: null`.
+- `spiq_sample.py` (new): samples a saved SPIQ starting point with stim and decodes it with `Postprocessing.readout`. It writes `<json>_readout.csv` and prints the share of valid plans, the share at the best plan and the cost distribution.
+- `formulation.rmd` section 9: q2o vs qaoa starting points for P4/P5 (boxplots, summary table, bar chart, uniform-random baseline). Runs whose files haven't been pulled yet are left out.
+
+**Why:** the user wanted an old-vs-new comparison on P4/P5. QAOA can't be simulated at 30/52 qubits, but the Clifford starting point can be sampled at any size.
+
+**Checks**
+- `spiq_sample.py` asserts that the rebuilt stim circuit gives the GA's energy exactly, and that the mean sampled QUBO energy is within 5 standard errors of the SPIQ expectation, which checks the bit order. On Week108/109 it reproduced the QAOA first-iteration readouts (P4: 330 at 50%).
+- Both q2o runs finished. `formulation.rmd` knits without errors (118 figures).
+- Results: valid plans P4 0.247 (new) vs 0.003 (old), P5 0.065 vs 0.000 (`docs/problem-formulation.md` §9).
+
+---
+
+## 2026-10-20: 5- and 6-table problems (P4, P5) with single-start SPIQ (Week108–109)
+
+**Files:** `base/ExperimentalAnalysis/IBMQ/QPUPerformance/Problems/JSON/3_predicates/`, `4_predicates/` (new), `base/IBMQExperiments.py`, `base/test_qubo_formulation.py`, `graphs/formulation.rmd`, docs.
+
+**What changed**
+- New problems P4 (`--input_idx 3`, 5 tables, 5 join conditions, 15 qubits) and P5 (`--input_idx 4`, 6 tables, 7 join conditions, 24 qubits).
+- `check_qubit_from_qubo_and_exit` cap raised from 23 to 25 qubits. Otherwise P5 (24) exits before running.
+- `test_qubo_formulation.py` covers P1–P5. A vectorised brute force over all 2^n bitstrings checks that the ground state is a valid plan with the true optimal cost.
+- `formulation.rmd` section 8: the P4/P5 input table, boxplots, energy curves, and a P1–P5 single-start summary with a normalized plot.
+- `plot_energy_curves` normalization: when a run starts at the ground state (start − ground ≈ 0), it now plots the raw gap instead of dividing by zero.
+
+**Why:** the user asked for one 5-table and one 6-table join, with the new formulation and single-start SPIQ. Week104/105, the weeks the user named, already held results, so these runs use Week108/109.
+
+**Checks**
+- `test_qubo_formulation.py` passes in the container. Ground states are valid and optimal: P4 cost 165, energy 4.908; P5 cost 1605, energy 8.340.
+- Both runs finished without errors and wrote `pcirc.qpy`.
+- `formulation.rmd` knits without errors (109 figures).
+- Results: optimal ratio P4 0.000 raw / 0.252 fallback, P5 0.000 (`docs/problem-formulation.md` §9).
+
+---
+
 ## 2026-10-13: Single-start SPIQ with the new formulation (Week105–107) and its plots
 
 **Files:** `graphs/formulation.rmd`, docs. No pipeline code changes.

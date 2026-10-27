@@ -25,6 +25,10 @@ If either goal fails, QAOA can be doing its job perfectly and still return a bad
 | P1 | 10, 15, 20 | 0–1 (0.1), 1–2 (0.1) | 15 |
 | P2 | 10, 15, 20, 30 | 0–1 (0.1), 2–3 (0.1) | 315 |
 | P3 | 10, 15, 20, 30 | 0–1 (0.1), 1–2 (0.2), 2–3 (0.3), 0–2 (0.4), 0–3 (0.5), 1–2 again (0.6) | 29.4 |
+| P4 (5 tables, 15 qubits) | 10, 15, 20, 30, 50 | 0–1 (0.1), 1–2 (0.2), 2–3 (0.1), 3–4 (0.3), 1–3 (0.5) | 165 |
+| P5 (6 tables, 24 qubits) | 10, 15, 20, 30, 50, 100 | 0–1 (0.1), 1–2 (0.2), 2–3 (0.1), 3–4 (0.3), 4–5 (0.1), 1–4 (0.5), 0–5 (0.4) | 1605 |
+
+P4 and P5 (input_idx 3 and 4) only fit with the new formulation: it needs R × (R − 2) qubits, 15 and 24. The old one would need (5 + 5) × 3 = 30 and (6 + 7) × 4 = 52.
 
 A plan's **cost** is the total size of the intermediate results. Example for P2 with order 0, 1, 2, 3:
 - joining 0 and 1 gives 10 × 15 × 0.1 = **15** rows;
@@ -34,8 +38,23 @@ A plan's **cost** is the total size of the intermediate results. Example for P2 
 ## 3. What we had before (the "Q2O" formulation, built for digital annealers)
 
 ### The bits
-- One bit per **(table, join step)**: "is this table in the result after this join step?" For 4 tables that is 4 × 2 = 8 bits.
-- One extra bit per **(join condition, join step)**: "is this join condition applied at this step?" For P3, with 6 conditions, that is 12 more bits.
+
+**What a join condition is.** A join condition is a predicate in the query's WHERE clause that links two tables, such as `T1.id = T2.id`. Its **selectivity** is the fraction of row pairs that survive it. The input files list the conditions in `pred.txt` (which two tables) and `pred_sel.txt` (the selectivity).
+
+**Why P3 has 6.** P3 was defined with six entries: 0–1, 1–2, 2–3, 0–2, 0–3, and 1–2 again. Four tables have 6 possible pairs, and P3 covers 5 of them (1–3 is missing). The pair 1–2 is listed twice (0.2 and 0.6). That means two separate conditions between the same two tables, for example `T1.a = T2.a AND T1.b = T2.b`. Together they filter by 0.2 × 0.6 = 0.12.
+
+**Which join steps get bits.** With 4 tables there are 3 joins. After the 1st join the result holds 2 tables, after the 2nd it holds 3, and after the 3rd it holds all 4. The last result is the same for every plan, so only the first **2 join steps** (R − 2 in general) need bits.
+
+- One bit per **(table, join step)**: "is this table in the result after this step?" With 4 tables and 2 steps that is 4 × 2 = **8 bits**.
+- One extra bit per **(join condition, join step)**: "is this condition's selectivity applied to this step's result?" With P3's 6 conditions and 2 steps that is 6 × 2 = **12 bits**.
+
+That makes (4 + 6) × 2 = **20 qubits** for P3. P1 has (3 + 2) × 1 = 5 and P2 has (4 + 2) × 2 = 12.
+
+**These extra bits are redundant.** A condition applies exactly when both of its tables are in the result, so the table bits already decide it. For the order T0, T1, T2, T3:
+- after step 1 the result is {T0, T1}, so only 0–1 should be on;
+- after step 2 the result is {T0, T1, T2}, so 0–1, 1–2, 0–2 and the second 1–2 should be on.
+
+In the old formulation those 12 bits were separate variables. Penalty C (below) only stopped a condition being on when one of its tables was missing. Nothing forced a condition on when both tables were present. As §4 shows, the optimizer could exploit this gap. The new formulation (§5) removes these bits: it writes "condition applies" as the product of the two table bits, which is 1 only when both tables are in. That takes P3 from 20 qubits to 8.
 
 ### The energy
 - **Penalty A:** each join step must contain the right number of tables (2 after the first join, 3 after the second, and so on).
@@ -69,7 +88,7 @@ With a squared cost, anything that pushes the log-size toward 0 lowers the energ
 For a 10-table query with tables of about 100,000 rows, the squared version would need a penalty around **175**, compared with about **5** for the plain one.
 
 ### Problem 3: too many qubits
-The join-condition bits add (number of conditions) × (number of join steps) qubits: 2, 4 and 12 extra for P1, P2 and P3. They exist only because the squared cost can't be written without them.
+The join-condition bits add (number of conditions) × (number of join steps) qubits: 2, 4 and 12 extra for P1, P2 and P3. They exist only because the squared cost can't be written without them. For larger queries this grows quickly: see "How the qubit count grows with problem size" in §5.
 
 ### Problem 4: the cost checker disagreed with the energy on P3
 P3 lists the pair 1–2 twice. That means two separate conditions between the same tables, for example `A.x = B.x AND A.y = B.y`, so both selectivities should apply: 0.2 × 0.6. The energy formula applied both, but the cost checker (`Postprocessing.py`) applied only the first. So the checker said P3's best cost was 39, while the true best is 29.4. It was the same plan either way.
@@ -90,6 +109,28 @@ P3 lists the pair 1–2 twice. That means two separate conditions between the sa
 | Penalties A and B | yes | yes, unchanged |
 | Penalty C | yes | **gone**: there are no condition bits left to police |
 | Repeated pair (P3 1–2) | energy: both applied; checker: first only | both applied in the energy **and** in the checker |
+
+### How the qubit count grows with problem size
+
+With R tables and P join conditions there are R − 2 join steps that need bits:
+- **New:** R × (R − 2) qubits. This depends only on the number of tables, and grows roughly as R².
+- **Old:** (R + P) × (R − 2) qubits. It grows with the number of conditions too. A query has at least R − 1 conditions (a chain) and at most R(R − 1)/2 (every pair joined), so the old count grows roughly as 2R² to R³/2.
+
+| Tables (R) | New | Old, chain (P = R − 1) | Old, every pair joined (P = R(R − 1)/2) |
+|---|---|---|---|
+| 3 | 3 | 5 | 6 |
+| 4 | 8 | 14 | 20 |
+| 5 | 15 | 27 | 45 |
+| 6 | 24 | 44 | 84 |
+| 7 | 35 | 65 | 140 |
+| 8 | 48 | 90 | 216 |
+| 10 | 80 | 152 | 440 |
+
+Our problems: P1 3 vs 5, P2 8 vs 12, P3 8 vs 20, P4 15 vs 30, and P5 24 vs 52 (new vs old).
+
+**What fits in a simulation.** An exact simulation stores 2^n numbers, at 16 bytes each: 256 MB at 24 qubits, 512 MB at 25, 16 GB at 30, and 16 TB at 40. With our 25-qubit limit (the container has about 7.8 GB of RAM), the new formulation reaches **6 tables** (24 qubits). The old one reaches **4 tables**, and only with up to 8 conditions. Every 5-table query is at least 27 qubits in the old formulation.
+
+**The circuit grows too.** SPIQ gives every gate its own angle, so the number of angles follows the number of terms in the energy. Measured: P4 has 140 angles (new) vs 410 (old), and P5 has 252 vs 868. The SPIQ search took 3–4× longer with the old formulation (see §9).
 
 ### Why each change helps
 - **Removing the condition bits** saves qubits, makes illegal conditions impossible, and removes a whole penalty.
@@ -112,8 +153,54 @@ P3 lists the pair 1–2 twice. That means two separate conditions between the sa
 | P2 | 34 → 16 | 0.78% → 4.7% |
 | P3 | 94 → 16 | 0.024% → 4.7% |
 
+### Correctness
+
+The same style of argument the original papers use: check each part of the energy separately, then choose λ so that breaking a rule never pays. Notation:
+- R tables, so there are J = R − 2 join steps with bits, numbered j = 0 … J − 1.
+- Bit v[t, j] = 1 means "table t is in the result after step j". S_j is the set of tables with v[t, j] = 1.
+- c_t = log(rows of t), which is ≥ 0. s_p = log(selectivity of condition p), which is ≤ 0. Condition p joins tables a_p and b_p.
+- The energy is E = λ · (A + B) + C, where:
+  - A = Σ_j (j + 2 − |S_j|)²
+  - B = Σ_t Σ_{j ≥ 1} v[t, j−1] · (1 − v[t, j])
+  - C = Σ_j ( Σ_t c_t · v[t, j] + Σ_p s_p · v[a_p, j] · v[b_p, j] )
+
+**Claim 1: A + B = 0 exactly on the valid plans, and A + B ≥ 1 on everything else.** *Proven.*
+- A is a sum of squares of whole numbers. It is 0 exactly when every step j holds j + 2 tables.
+- Each term of B is 0 or 1. It is 1 exactly when a table is in at step j − 1 and out at step j. So B = 0 means S_0 ⊆ S_1 ⊆ … ⊆ S_{J−1}.
+- Both 0 together means S_0 is a pair, each later step adds exactly one table, and one table is left over for the final join. That is a left-deep join order (t1, t2, …, tR) with S_j = {t1, …, t_{j+2}}. Conversely, every join order gives such bits.
+- Two orders give the same bits only when they differ by swapping the first two tables. That doesn't change the cost, because joining 1 with 2 is the same as joining 2 with 1. So there are R!/2 valid bitstrings.
+- A and B are whole numbers ≥ 0, so a bitstring that breaks any rule has A + B ≥ 1.
+
+**Claim 2: on a valid plan, C is exactly the sum of the log result sizes.** *Proven.*
+- For a valid bitstring, v[a_p, j] · v[b_p, j] = 1 exactly when both tables of condition p are in S_j. So step j contributes Σ_{t ∈ S_j} c_t + Σ_{p inside S_j} s_p.
+- That is log( Π rows × Π selectivities ) = log |I_j|, the estimated size of the j-th intermediate result. A condition listed twice contributes both selectivities, as in the cost checker.
+- So C = Σ_j log |I_j| = log Π_j |I_j|, with no approximation.
+- The old formulation only reached this once Penalty C held. A condition bit could be on with a missing table, or off with both tables present (§4).
+
+**Claim 3: with a large enough λ, no invalid bitstring has lower energy than the best plan.** *Proven for the safe λ below. Our default λ is checked per problem, not proven.*
+- Let C* be the cost term of the best plan, and let C_min be the lowest C over all 2^n bitstrings.
+- An invalid bitstring has E ≥ λ · 1 + C_min (Claim 1), and the best plan has E = C*. So any λ > C* − C_min is safe.
+- Neither number needs a search:
+  - C* ≤ C(any valid plan you write down).
+  - C_min ≥ J × Σ_p s_p, because the c_t terms are ≥ 0, and at most every condition is switched on at every step.
+- So this weight is always safe:
+
+  λ_safe > C(any valid plan) − J × Σ_p s_p
+
+  (The "Known limit" formula below is this, plus a margin of 1.)
+- Our default λ = 1.1 × max c_t is smaller. It covers "drop one table", which saves at most max c_t. It does not cover "swap a table between steps" (breaking B), or several breaks at once that each save a selective condition. For example, on P1 λ_safe is about 3.2, but we use 1.43.
+- So for the default λ, Claim 3 is checked instance by instance. `base/test_qubo_formulation.py` brute-forces all 2^n bitstrings and confirms that the lowest-energy one is a valid plan, for P1–P5. A new problem needs this check, or an exact classical solver, before trusting the default λ. Otherwise use λ_safe, at the price of smaller visible gaps between plans.
+
+**Claim 4: the lowest energy belongs to the plan with the lowest true cost.** *Not provable in general, for either formulation. Checked on P1–P5.*
+- By Claims 1–3, the ground state is the valid plan with the smallest Σ_j log |I_j|, which is the smallest product Π_j |I_j|. The cost we report is the sum Σ_j |I_j|.
+- With a single step (R = 3, P1) the two agree, because log is increasing. With two or more steps they can disagree. Take plan X with intermediate sizes (10, 1000): product 10 000, sum 1010. Plan Y has (100, 200): product 20 000, sum 300. Our energy prefers X, while the true cost prefers Y.
+- The old formulation's Σ_j (log |I_j|)² is also a stand-in, with the same kind of gap. It weights large results more, so it may track the sum more closely, but it is no more exact.
+- What we know: on P1–P5 the ground state decodes to the true optimal cost (brute force over all join orders, in `test_qubo_formulation.py`). How often the two disagree on bigger or random queries is not yet measured. Comparing the product-best plan with the sum-best plan over many random queries would measure it, using only classical enumeration.
+
+**Summary.** The bits, penalties and cost term are exact (Claims 1–2). Validity of the ground state is guaranteed with λ_safe, and checked per problem with our smaller default λ (Claim 3). Optimality for the true cost is checked, not guaranteed (Claim 4). The original formulations have the same gap: they prove the encoding and the penalty argument, and rely on experiments for the rest.
+
 ### Known limit
-The λ rule is argued only for the "forgot a table" kind of cheat. It is not proven for the "swapped a table between steps" kind. It holds on P1–P3; `base/test_qubo_formulation.py` checks this by brute force. If a bigger problem ever ends up with a fake plan at the lowest energy, switch to the guaranteed-safe weight:
+The λ rule is argued only for the "forgot a table" kind of cheat. It is not proven for the "swapped a table between steps" kind (see Claim 3 in "Correctness"). It holds on P1–P5; `base/test_qubo_formulation.py` checks this by brute force. If a bigger problem ever ends up with a fake plan at the lowest energy, switch to the guaranteed-safe weight:
 
   λ = (energy of any real plan) − (number of join steps × sum of the negative log selectivities) + 1
 
@@ -147,6 +234,8 @@ Newest first.
 
 | Date | Formulation | Problem | Result | Where |
 |---|---|---|---|---|
+| 2026-10-21 | **q2o vs qaoa, single-start SPIQ starting point only** (no QAOA; q2o needs 30 / 52 qubits) (Week110–111 for q2o, the Week108–109 points for qaoa) | P4, P5 | Share of samples that are valid plans: **P4 qaoa 0.247 vs q2o 0.003; P5 qaoa 0.065 vs q2o 0.000**. With fallback decoding, share at the best plan: P4 0.256 vs 0.188, P5 0.000 vs 0.047. See "Old vs new formulation on P4/P5" below. | `spiq_init_outputs/single_Week108–111` |
+| 2026-10-20 | qaoa, single-start SPIQ, same settings as Week105–107 (Week108–109) | **P4 (5 tables, 15 qubits), P5 (6 tables, 24 qubits)** | Share at the best plan: **P4 0.000 raw / 0.252 with fallback, P5 0.000**. See "Larger problems" below. | `outputs/spiq/Week108–109` (+ `energy/`) |
 | 2026-10-13 | qaoa, **single-start SPIQ** (one GA, seed 0, 2000 generations, one QAOA run) (Week105–107) | P1–P3 | Share at the best plan: **P1 1.000, P2 0.000, P3 1.000**. See "Single-start SPIQ" below. | `outputs/spiq/Week105–107` (+ `energy/`) |
 | 2026-10-12 | qaoa, **multi-start SPIQ**, same settings as Week93–95 (Week102–104) | P1–P3 | Share at the best plan: **P1 1.000, P2 0.503, P3 1.000** (old formulation: 0.507, 0.0001, 0.126). See "Multi-start SPIQ" below. | `outputs/multi-spiq/Week102–104` (+ `energy/`) |
 | 2026-10-12 | q2o, random start, same settings (Week99–101) | P1–P3 | The like-for-like old-formulation partner runs. See "Old vs new formulation" below. | `outputs/uninitialized/Week99–101` (+ `energy/`) |
@@ -253,3 +342,40 @@ What this shows:
 - **Run time:** about 7 min (P1) and 13 min (P2, P3), compared with 0.9–1.7 h for multi-start.
 
 Plots: `graphs/formulation.rmd` sections 6 and 7.2.
+
+### Larger problems: 5 and 6 tables, single-start SPIQ (2026-10-20)
+
+The same settings as Week105–107. Week108 = P4 (5 tables, 15 qubits, 140 angles) and Week109 = P5 (6 tables, 24 qubits, 252 angles). The self-check (`test_qubo_formulation.py`) confirms that the lowest-energy bitstring of each is a real plan with the best cost (165 and 1605).
+
+| Workload | Qubits | Share at best plan (raw / fallback) | Energy: start → end | Lowest possible | Most common costs (raw decode) | Run time |
+|---|---|---|---|---|---|---|
+| P4 (best 165) | 15 | 0.000 / **0.252** | 7.449 → 7.380 | 4.908 | 330 (50%), 2700 (25%), 7200 (25%) | 24 min |
+| P5 (best 1605) | 24 | 0.000 / 0.000 | 17.558 → 17.482 | 8.340 | 8500–32750, spread out; cheapest seen 7890 (fallback, 6%) | 75 min |
+
+What this shows:
+- **The single GA start is far from the ground state on both.** Unlike P1 and P3, the GA's best Clifford point is not the best plan. COBYLA then barely moves (−0.07 on each), and the first-iteration readout is almost the same as the final one.
+- **P4 is close.** Half the samples are on cost 330, the second-best order (swap tables 2 and 3). With fallback decoding a quarter reach the best plan, 165.
+- **P5 does not get near the best plan.** It is 9.1 above the lowest energy. With 252 angles and 1000 evaluations, COBYLA has fewer than four evaluations per angle.
+- Next to try: multi-start SPIQ (it fixed P2), or more COBYLA evaluations.
+
+Plots: `graphs/formulation.rmd` section 8.
+
+### Old vs new formulation on P4/P5: SPIQ starting points only (2026-10-21)
+
+With the old formulation, P4 and P5 need 30 and 52 qubits, too many to simulate QAOA. So this compares only what single-start SPIQ (one GA, seed 0, 2000 generations, reps 2) gives as the starting state. That state is a Clifford state, so stim can sample it at any size. `base/spiq_sample.py` takes 10240 samples and decodes them like a QAOA readout. The new-formulation points are the ones QAOA started from in Week108/109. The old-formulation points are Week110 (P4) and Week111 (P5).
+
+| Workload | Formulation | Qubits | Angles | Valid plans | Best plan (raw / fallback) | Median cost (raw / fallback) | Distinct states in 10240 samples | SPIQ run time |
+|---|---|---|---|---|---|---|---|---|
+| P4 (best 165) | **new** | 15 | 140 | **0.247** | 0.000 / **0.256** | 330 / 330 | 4 | 18 min |
+| P4 (best 165) | old | 30 | 410 | 0.003 | 0.004 / 0.188 | 5175 / 2700 | 10154 | 76 min |
+| P5 (best 1605) | **new** | 24 | 252 | **0.065** | 0.000 / 0.000 | 19250 / 11625 | 16 | 40 min |
+| P5 (best 1605) | old | 52 | 868 | 0.000 | 0.001 / 0.047 | 20550 / 7890 | 10240 | 117 min |
+| *uniformly random bits* | – | – | – | – | P4 0.004 / 0.145, P5 0.001 / 0.023 | – | – | – |
+
+What this shows:
+- **The old-formulation starting points are close to random guessing.** Almost every sample is a different bitstring, almost none are valid plans, and the share at the best plan is only a little above the uniform-random baseline (P4 0.188 vs 0.145, P5 0.047 vs 0.023). What does land on the best plan comes from the fallback repair, not from SPIQ.
+- **The new-formulation starting points are concentrated.** Only 4 (P4) or 16 (P5) distinct states. On P4 a quarter of the samples are valid plans and a quarter decode to the best plan.
+- **On P5, neither start contains the best plan.** The new start sits on a few bad plans: it beats the old start on valid plans, but is worse on share-at-best and median fallback cost. This matches the Week109 QAOA result (§ "Larger problems").
+- **Size:** the old formulation needs 2–3.4× the qubits and angles, and the SPIQ search took 3–4× longer.
+
+Plots: `graphs/formulation.rmd` section 9.

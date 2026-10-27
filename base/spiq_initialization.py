@@ -55,6 +55,10 @@ from clapton.clapton import claptonize, loss_func
 from clapton.depolarization import GateGeneralDepolarizationModel
 
 
+# Above this, skip the exact ground state and the statevector self-check (2^n memory).
+MAX_EXACT_QUBITS = 25
+
+
 def _parse_rep_index(param_name: str) -> int:
     """QAOA layer index encoded in a parameter name such as 'γ[1]' (first integer, default 0)."""
     m = re.search(r"(\d+)", param_name)
@@ -538,7 +542,9 @@ def run_spiq_initialization(
     }
     if verify_qiskit_statevector:
         try:
-            from qiskit.quantum_info import Statevector
+            if pcirc.num_qubits > MAX_EXACT_QUBITS:
+            raise RuntimeError(f"{pcirc.num_qubits} qubits is too many for a statevector")
+        from qiskit.quantum_info import Statevector
 
             def _ising_expectation(theta_vec):
                 bound = pcirc.assign_parameters(

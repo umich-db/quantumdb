@@ -68,7 +68,7 @@ parser.add_argument("--spiq_starts", type=int, default=1,
                     help="Number of SPIQ candidate points to optimise from (multi-start); best run is kept")
 parser.add_argument("--week", type=str, default="Week84", help="Top-level results directory (relative to base/)")
 parser.add_argument("--iterations", type=int, default=10000, help="Optimizer max iterations")
-parser.add_argument("--input_idx", type=int, default=0, help="Problem folder <idx>_predicates: 0=P1, 1=P2, 2=P3")
+parser.add_argument("--input_idx", type=int, default=0, help="Problem folder <idx>_predicates: 0=P1, 1=P2, 2=P3, 3=P4 (5 tables), 4=P5 (6 tables)")
 args, _ = parser.parse_known_args()
 
 TRIAL_ID = args.trial
@@ -428,7 +428,7 @@ def solve_with_QAOA(qubo, iterations, result_dir, reps=TAG, use_local_simulator=
     return qaoa_result, final_point, last_eval, min_state_buffer
 
 
-def check_qubit_from_qubo_and_exit(qubo, max_qubits=23):
+def check_qubit_from_qubo_and_exit(qubo, max_qubits=25):
     """Exit early if the QUBO needs more qubits than we can simulate."""
     try:
         num_qubits = qubo.get_num_binary_vars()
@@ -457,7 +457,7 @@ def conduct_IBMQ_QPU_experiments():
 
         print("Generating qubo", flush=True)
         qubo, penalty_weight = QUBOGenerator.FORMULATIONS[config.configuration["qubo-formulation"]](card, pred, pred_sel)
-        check_qubit_from_qubo_and_exit(qubo, max_qubits=23)
+        check_qubit_from_qubo_and_exit(qubo)
 
         currentPath = f'{args.week}/ExperimentalAnalysis/IBMQ/QPUPerformance/Results/CPU_Data'
         result_dir = os.path.join(

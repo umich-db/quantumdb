@@ -6,6 +6,7 @@ ibmq-processing: "cpu" = local simulator (all paper experiments),
 qubo-formulation: "qaoa" = no predicate qubits, linear cost, derived penalty (default);
                   "q2o"  = original encoding. Old results and SPIQ files were made with "q2o".
                   Used by IBMQExperiments.py, spiq_initialization.py and postprocess_results.py.
+                  The QUBO_FORMULATION environment variable overrides it for one run.
 """
 
 import os
@@ -17,5 +18,5 @@ configuration = {
     "ibmq-group": "open",
     "ibmq-project": "main",
     "ibmq-backend": "",
-    "qubo-formulation": "qaoa",
+    "qubo-formulation": os.environ.get("QUBO_FORMULATION", "qaoa"),
 }

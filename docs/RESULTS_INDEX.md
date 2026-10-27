@@ -12,6 +12,8 @@ Problems (`--input_idx`, current definitions since commit `ce7efac6`, 2026-09-23
 | P1 | 0 | 3 relations, 2 predicates | 5 | 40 | 1.031 |
 | P2 | 1 | 4 relations, 2 predicates | 12 | 116 | 4.766 |
 | P3 | 2 | 4 relations, 6 predicates | 20 | 268 | 2.725 |
+| P4 | 3 | 5 relations, 5 predicates | 15 (new "qaoa" formulation only) | 140 | 4.908 (qaoa) |
+| P5 | 4 | 6 relations, 7 predicates | 24 (new "qaoa" formulation only) | 252 | 8.340 (qaoa) |
 
 Older runs are all filed under `input0` whatever the problem, so they're identified here by qubit and parameter count.
 
@@ -42,6 +44,15 @@ Single-start SPIQ runs (`outputs/spiq/energy/WeekNN`, `outputs/spiq/WeekNN`), ne
 | Week105 | P1 | min **1.176 = exact** (284 evals). SPIQ Ising -1.494 (same point as Week102). Optimal ratio 1.000 |
 | Week106 | P2 | min **5.100** (exact 3.653, 1000 evals). SPIQ Ising -5.329. Optimal ratio 0.000 (465 50%, 900 25%, 1350 25%) |
 | Week107 | P3 | min **2.334 = exact** (994 evals). SPIQ Ising -7.548 (same point as Week104). Optimal ratio 1.000 |
+| Week108 | P4 (5 tables, 15 qubits) | min **7.380** (exact 4.908, 1000 evals). SPIQ Ising -16.734. Optimal ratio 0.000 raw / 0.252 fallback (raw: 330 50%, 2700 25%, 7200 25%) |
+| Week109 | P5 (6 tables, 24 qubits) | min **17.482** (exact 8.340, 1000 evals). SPIQ Ising -31.127. Optimal ratio 0.000 (no sample at cost 1605) |
+
+SPIQ-only runs (no QAOA), old "q2o" formulation, same single-start SPIQ settings, started with `QUBO_FORMULATION=q2o bash logs/run_spiq_only.sh <idx> <week> <opt_cost>`. The starting point is sampled 10240 times with stim by `base/spiq_sample.py`. The files are in `spiq_init_outputs/single_WeekNN/` (JSON, pcirc QPY, `*_readout.csv`), and the logs in `logs/spiqonly_WeekNN_inputN.log`. The Week108/109 folders also hold a `*_qaoa_readout.csv` of their starting points, made the same way.
+
+| Week | Problem | Notes |
+|---|---|---|
+| Week110 | P4, q2o (30 qubits, 410 angles) | SPIQ energy 47.57 (q2o scale; no exact ground state above 25 qubits). Valid plans 0.003, at best plan 0.004 raw / 0.188 fallback |
+| Week111 | P5, q2o (52 qubits, 868 angles) | SPIQ energy 122.27 (q2o scale). Valid plans 0.000, at best plan 0.001 raw / 0.047 fallback |
 
 Week102–104 use the same settings with the new formulation, so their energies are on the "qaoa" scale (exact 1.176 / 3.653 / 2.334). Their SPIQ files end in `_qaoa`, and each week's `energy/` folder holds the response pickle (`response_pickle_trial1_qaoa`). Unlike Week93–95, the readouts have no `#` run-note line; the settings are here and in the logs. Plots: `graphs/formulation.rmd` sections 4–6.
 
