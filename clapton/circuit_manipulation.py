@@ -8,8 +8,6 @@ Vendored from the CAFQA / SPIQ code base (Bharadwaj et al., 2026,
 arXiv:2602.14327).
 """
 from __future__ import annotations
-from clapton.clifford import ParametrizedCliffordCircuit
-
 from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit import QuantumCircuit, transpile
 from qiskit.circuit import Parameter, ParameterExpression, ParameterVector
@@ -189,6 +187,10 @@ def qiskit_to_stim(circuit):
     Returns:
     (stim._stim_sse2.Circuit) stim circuit.
     """
+    # The QAOA driver only needs the Qiskit-side relaxation helpers.  Import
+    # Stim support lazily so that its environment does not need Stim installed.
+    from clapton.clifford import ParametrizedCliffordCircuit
+
     assert isinstance(
         circuit, QuantumCircuit
     ), f"Circuit is not a Qiskit QuantumCircuit."

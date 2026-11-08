@@ -3,8 +3,8 @@
 Builds the join-ordering QUBO (Scripts/QUBOGenerator.py), then minimises it
 with QAOA in one of two modes:
 
-* Random / uninformed initialization (no --spiq_json): stock qiskit `QAOA`
-  over the 2*reps angles (gamma, beta), started from a fixed point.
+* Fixed initialization (no --spiq_json): relaxed per-gate QAOA, initialized
+  from the exact lift of the stock shared point where every angle is 0.5.
 * SPIQ initialization (--spiq_json <file>): loads the relaxed per-gate
   circuit `pcirc` and the Clifford initial point(s) written by
   spiq_initialization.py, and optimises every per-gate angle directly.
@@ -33,12 +33,11 @@ from types import SimpleNamespace
 
 import numpy as np
 from qiskit import IBMQ
-from qiskit.algorithms import QAOA
 from qiskit.algorithms.optimizers import AQGD, COBYLA, SPSA
+from qiskit.circuit import ParameterExpression
 from qiskit.circuit.library.n_local.qaoa_ansatz import QAOAAnsatz
 from qiskit.providers.aer import QasmSimulator
 from qiskit.utils import QuantumInstance
-from qiskit_optimization.algorithms import MinimumEigenOptimizer
 
 try:
     from qiskit import qpy
@@ -50,6 +49,16 @@ import Scripts.Postprocessing as Postprocessing
 import Scripts.ProblemGenerator as ProblemGenerator
 import Scripts.QUBOGenerator as QUBOGenerator
 
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from clapton.circuit_manipulation import (
+    modify_circuit,
+    relax_qaoa_parameters,
+    transform_to_allowed_gates,
+)
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--trial", type=int, default=1, help="Trial number, used in result paths")
 parser.add_argument("--reps", type=int, default=1, help="QAOA depth p")
@@ -60,8 +69,8 @@ parser.add_argument(
     default=None,
     help=(
         "Path to SPIQ initialization JSON produced by spiq_initialization.py. "
-        "If provided, run the optimizer over the relaxed ansatz (per-gate angles) "
-        "instead of the vanilla QAOAAnsatz."
+        "If provided, initialize the relaxed ansatz from SPIQ instead of the "
+        "fixed baseline point."
     ),
 )
 parser.add_argument("--spiq_starts", type=int, default=1,
@@ -223,6 +232,7 @@ def solve_with_QAOA_spiq(
     expected_energy=None,
     sanity_check_tolerance=0.25,
     log_suffix="",
+    solver_label="spiq",
 ):
     """
     SPIQ-initialized QAOA: optimise over the RELAXED ansatz (one parameter
@@ -322,7 +332,7 @@ def solve_with_QAOA_spiq(
 
     # Diagnostic only: energy at the SPIQ point, re-sampled after optimisation.
     initial_energy = evaluate_qubo_energy_only(np.asarray(relaxed_initial_point))
-    print(f"[spiq-init] logged iteration 0 energy = {initial_energy}")
+    print(f"[{solver_label}-init] logged iteration 0 energy = {initial_energy}")
 
     _write_energy_log(energy_log_path, energies)
 
@@ -335,7 +345,7 @@ def solve_with_QAOA_spiq(
             min_state_buffer = _sample_min_state(_bind(min_params), qubo, min_energy_seen, min_eval_idx, min_params)
             samples = min_state_buffer["samples"]
         except Exception as exc:
-            print(f"[spiq-solver] sampling best-seen params failed: {exc}")
+            print(f"[{solver_label}-solver] sampling best-seen params failed: {exc}")
 
     best = min(samples, key=lambda s: s["fval"], default=None)
     response = _make_spiq_response(
@@ -345,7 +355,7 @@ def solve_with_QAOA_spiq(
     )
 
     print(
-        f"[spiq-solver] done: n_params={n_params}, "
+        f"[{solver_label}-solver] done: n_params={n_params}, "
         f"used_eval={eval_count}, best_energy={min_energy_seen}, "
         f"opt_result.fun={opt_result.fun}"
     )
@@ -353,72 +363,62 @@ def solve_with_QAOA_spiq(
     return response, final_point, eval_count, min_state_buffer, energy_log_path
 
 
+def _fully_decompose(circuit, unchanged_limit=3):
+    """Match the decomposition used when SPIQ creates its relaxed circuit."""
+    unchanged = 0
+    while unchanged < unchanged_limit:
+        old_depth = circuit.depth()
+        circuit = circuit.decompose()
+        unchanged = unchanged + 1 if circuit.depth() == old_depth else 0
+    return circuit
+
+
+def _build_relaxed_fixed_baseline(qubo, reps, fixed_value=0.5):
+    """Build relaxed QAOA and exactly lift the old shared fixed point."""
+    operator, _ = qubo.to_ising()
+    shared = _fully_decompose(QAOAAnsatz(operator, reps=reps).decompose())
+    pre_relax = transform_to_allowed_gates(modify_circuit(shared))
+    relaxed, _, _ = relax_qaoa_parameters(pre_relax)
+
+    lifted_by_name = {}
+    for before_instruction, after_instruction in zip(pre_relax.data, relaxed.data):
+        before = before_instruction[0]
+        after = after_instruction[0]
+        if not before.params or not after.params:
+            continue
+        before_angle = before.params[0]
+        after_angle = after.params[0]
+        if not isinstance(after_angle, ParameterExpression) or not after_angle.parameters:
+            continue
+        if not isinstance(before_angle, ParameterExpression) or not before_angle.parameters:
+            raise ValueError("Relaxed QAOA parameter has no shared source expression")
+        relaxed_parameter = next(iter(after_angle.parameters))
+        shared_values = {parameter: fixed_value for parameter in before_angle.parameters}
+        lifted_by_name[relaxed_parameter.name] = float(before_angle.bind(shared_values))
+
+    relaxed_names = [parameter.name for parameter in relaxed.parameters]
+    if set(lifted_by_name) != set(relaxed_names):
+        raise ValueError("Fixed-point lift does not cover every relaxed parameter")
+    return relaxed, [lifted_by_name[name] for name in relaxed_names]
+
+
 def solve_with_QAOA(qubo, iterations, result_dir, reps=TAG, use_local_simulator=False):
-    """
-    Randomly/uninformed-initialized QAOA baseline: stock qiskit QAOA over the
-    2*reps angles, started from a fixed point.
-
-    Returns (qaoa_result, final_point, used_eval, min_state_buffer) where
-    min_state_buffer holds samples of the minimum-energy parameters seen.
-    """
-    quantum_instance = get_local_QASM_backend() if use_local_simulator else get_IBMQ_backend()
-
+    """Relaxed per-gate baseline with the stock fixed 0.5 state as its start."""
+    pcirc, initial_point = _build_relaxed_fixed_baseline(qubo, reps)
     os.makedirs(result_dir, exist_ok=True)
-    energy_log_path = os.path.join(result_dir, f"energy_per_iteration_{iterations}_{current_optim}_{TAG}_{TRIAL_ID}.csv")
-    energies = []
-    last_params = None
-    last_eval = 0
+    with open(os.path.join(result_dir, "pcirc.qpy"), "wb") as fqpy:
+        qpy.dump(pcirc, fqpy)
 
-    # Qiskit QAOA callback reports the Ising expectation value.
-    # Samples/postprocessing use qubo.objective.evaluate(x), which is in the
-    # original QUBO objective scale. Convert every callback energy to QUBO
-    # scale by adding the Ising offset, so energy_per_iteration_*.csv is
-    # directly comparable with energies of sampled bitstring distributions.
-    op, ising_offset = qubo.to_ising()
-    ising_offset = float(ising_offset)
-    print(f"[energy-scale] vanilla QAOA callback energies will be logged as QUBO-scale: Ising mean + offset ({ising_offset})")
-
-    # Track minimum QUBO-scale energy seen during optimization and the corresponding parameters
-    min_energy_seen = float('inf')
-    min_params = None
-    min_eval_idx = None
-
-    def callback(eval_count, parameters, mean, metadata):
-        """Called by qiskit QAOA after every energy evaluation; `metadata` is the std estimate."""
-        nonlocal min_energy_seen, min_params, min_eval_idx, last_params, last_eval
-        energy_value = float(np.real(mean)) + ising_offset
-        energies.append((eval_count, energy_value, parameters, metadata))
-        last_params = list(parameters)
-        last_eval = int(eval_count)
-        if energy_value < min_energy_seen:
-            min_energy_seen = energy_value
-            min_params = list(parameters)
-            min_eval_idx = int(eval_count)
-
-    # Uninformed starting point used for the "Random Initialization" baseline.
-    # ponytail: fixed 0.5 for every angle, not a random draw; seed a RNG if true random starts are needed.
-    initial_point = [0.5] * (2 * reps)
-
-    qaoa_meas = QAOA(optimizer=get_optimizer(iterations), quantum_instance=quantum_instance,
-                     reps=reps, initial_point=initial_point, callback=callback)
-    qaoa_result = MinimumEigenOptimizer(qaoa_meas).solve(qubo)
-
-    _write_energy_log(energy_log_path, energies)
-
-    final_point = last_params if last_params is not None else initial_point
-
-    # Re-sample the minimum-energy state found (parameters + measured samples).
-    min_state_buffer = None
-    if min_params is not None:
-        try:
-            ansatz = QAOAAnsatz(op, reps)
-            qc = ansatz.assign_parameters(dict(zip(ansatz.parameters, min_params)), inplace=False)
-            qc.measure_all()
-            min_state_buffer = _sample_min_state(qc, qubo, min_energy_seen, min_eval_idx, min_params)
-        except Exception:
-            min_state_buffer = None
-
-    return qaoa_result, final_point, last_eval, min_state_buffer
+    response, final_point, used_eval, min_state_buffer, _ = solve_with_QAOA_spiq(
+        qubo,
+        iterations,
+        pcirc,
+        initial_point,
+        result_dir,
+        use_local_simulator=use_local_simulator,
+        solver_label="baseline",
+    )
+    return response, final_point, used_eval, min_state_buffer
 
 
 def check_qubit_from_qubo_and_exit(qubo, max_qubits=23):
@@ -438,7 +438,7 @@ def check_qubit_from_qubo_and_exit(qubo, max_qubits=23):
 
 
 def conduct_IBMQ_QPU_experiments():
-    """Run QAOA (SPIQ- or uninformed-initialized) on problem --input_idx and save all outputs."""
+    """Run relaxed QAOA (SPIQ- or fixed-initialized) and save all outputs."""
     processing = config.configuration["ibmq-processing"]
     if processing == "qpu":
         IBMQ.save_account(config.configuration["ibmq-token"])
@@ -472,7 +472,7 @@ def conduct_IBMQ_QPU_experiments():
                     f"pcirc qpy={spiq_bundle[3].get('pcirc_qpy')}"
                 )
             except Exception as exc:
-                print(f"[spiq] failed to load {SPIQ_JSON}: {exc}. Falling back to vanilla QAOA.")
+                print(f"[spiq] failed to load {SPIQ_JSON}: {exc}. Falling back to the fixed relaxed baseline.")
                 spiq_bundle = None
 
         use_local = processing != "qpu"

@@ -41,7 +41,7 @@ D-Wave / co-design code has been removed.
 | `base/Scripts/QUBOGenerator.py` | Native QUBO: validity penalties (H_A, H_B, H_pred) + squared log intermediate cardinality cost. |
 | `base/spiq_initialization.py` | Relaxes the QAOA ansatz, runs the clapton genetic algorithm over Clifford angles, and writes the initial points. |
 | `clapton/` | Vendored CAFQA/SPIQ Clifford-search library (stim + pygad). |
-| `base/IBMQExperiments.py` | QAOA driver: random-init baseline or SPIQ-initialized relaxed ansatz, COBYLA. |
+| `base/IBMQExperiments.py` | QAOA driver: fixed-init or SPIQ-initialized relaxed ansatz, COBYLA. |
 | `base/postprocess_results.py` | Re-samples chosen iterations, decodes final samples, prints the exact ground-state energy. |
 | `base/Scripts/Postprocessing.py` | Bitstring → score vector → join order, plus fallback. Costs each plan. |
 | `base/config.py` | `ibmq-processing` (`cpu` = local simulator) and IBM Q credentials (`IBMQ_TOKEN` env var). |
@@ -93,7 +93,7 @@ python3 spiq_initialization.py --input_idx 0 --reps 2 --n_gens 4000 --out_dir ..
 python3 IBMQExperiments.py --trial 1 --reps 2 --optimizer 1 --input_idx 0 --week Week84 \
     --spiq_json ../spiq_init_outputs/spiq_initial_point_input0_reps2_3rel_2pred.json
 
-# 2b. Random-initialization baseline: same command without --spiq_json
+# 2b. Relaxed fixed-initialization baseline: same command without --spiq_json
 #     (use a different --week so results do not overwrite each other)
 python3 IBMQExperiments.py --trial 1 --reps 2 --optimizer 1 --input_idx 0 --week Week85
 
@@ -188,8 +188,9 @@ offset vs `energy_best`, tolerance 0.25) before optimising.
 
 ## 6. QAOA driver (`IBMQExperiments.py`)
 
-* **`solve_with_QAOA`** (random-initialization baseline): stock qiskit `QAOA`
-  over `2·reps` angles, all starting at 0.5. A callback logs every evaluation.
+* **`solve_with_QAOA`** (fixed-initialization baseline): relaxes every QAOA gate
+  to its own parameter. Its starting point is the exact lift of the stock
+  shared QAOA point where all `2·reps` angles are 0.5.
 * **`solve_with_QAOA_spiq`** (SPIQ): loads `pcirc` from QPY. COBYLA then
   optimises all per-gate angles, starting from `relaxed_initial_point` and
   minimising `Σ_x p(x)·qubo.objective(x)` over 10 240 shots. With

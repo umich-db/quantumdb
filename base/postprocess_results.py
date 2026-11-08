@@ -5,7 +5,7 @@ For each trial it
      eval 1, the first iteration) from energy_per_iteration_*.csv and writes
      readout_summary_eval<k>.csv. SPIQ runs are re-simulated on the relaxed
      per-gate circuit (the pcirc.qpy that IBMQExperiments.py saves next to the CSV,
-     or --pcirc_qpy); random-initialization runs on the stock QAOAAnsatz,
+     or --pcirc_qpy),
   2. decodes the pickled final response into readout_summary.csv,
   3. prints the exact ground-state energy of the QUBO (the dashed line in Figs. 3–5).
 The readout CSVs carry both the raw and the fallback join order per bitstring;
@@ -65,8 +65,8 @@ def run_callback_parameter_simulation_and_postprocess(
 ):
     """Bind `parameters` into the ansatz, sample it and write its readout CSV.
 
-    `pcirc` is the relaxed per-gate SPIQ circuit; when it is None the parameters
-    are the 2*reps angles of the stock QAOAAnsatz (random-initialization runs).
+    `pcirc` is the relaxed per-gate circuit. The stock QAOAAnsatz fallback is
+    retained for results produced before the relaxed baseline became default.
     """
     if card_dict is None:
         card_dict = {}
@@ -80,8 +80,7 @@ def run_callback_parameter_simulation_and_postprocess(
     if len(parameters) != ansatz.num_parameters:
         raise ValueError(
             f"{len(parameters)} logged parameters but the ansatz has {ansatz.num_parameters}. "
-            "SPIQ runs need their pcirc (pcirc.qpy in the trial dir or --pcirc_qpy); "
-            "random-initialization runs must not have one.")
+            "Relaxed runs need their pcirc (pcirc.qpy in the trial dir or --pcirc_qpy).")
     param_map = {p: v for p, v in zip(ansatz.parameters, parameters)}
 
     qc = ansatz.assign_parameters(param_map, inplace=False)
