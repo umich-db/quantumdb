@@ -44,6 +44,59 @@ So the tables below describe the circuits that were actually executed.
 
 **One small inefficiency.** RZ(5π/2) is the same gate as S, up to a global phase. SPIQ's Clifford check only recognises angles between 0 and 2π, so it misses this one and leaves a fixed RZ in every mixer. That is n·p extra RZ gates with no parameter. On hardware it costs nothing, because RZ is applied virtually in software. It does make the SPIQ RZ count look larger than it is.
 
+### How the SPIQ circuit differs from the plain circuit
+
+Both circuits have the same structure: a starting superposition, then for each layer a cost block (one rotation per Z term, CNOT–RZ–CNOT per ZZ term) followed by a mixer (one rotation per qubit). They differ in three ways.
+
+**1. The angles are free, not shared.** This is the main difference.
+- **Plain QAOA** has 2 angles per layer:
+  - γ, shared by every cost rotation in that layer (each scaled by its term's coefficient c);
+  - β, shared by every mixer rotation.
+- **SPIQ "relaxes" the circuit** (`relax_qaoa_parameters` in `clapton`): every rotation gets its own angle. A cost gate becomes RZ(c · γᵢ) with its own γᵢ, and a mixer gate becomes RZ(2βᵢ) with its own βᵢ.
+
+| Angles at 2 layers | P1 | P2 | P3 | P4 | P5 |
+|---|---|---|---|---|---|
+| Plain (2 per layer), both formulations | 4 | 4 | 4 | 4 | 4 |
+| SPIQ, new = (Z + ZZ + n) · p | 18 | 64 | 64 | 140 | 252 |
+| SPIQ, old | 40 | 116 | 268 | 410 | 868 |
+
+The plain circuit is a special case of the SPIQ circuit: tie all the γᵢ of a layer together, and all the βᵢ, and you get it back. So the SPIQ circuit can express everything the plain one can, and more. It is no longer strictly QAOA, because the angles don't follow the two-angles-per-layer schedule. It is closer to a hardware-style circuit that keeps QAOA's gate layout.
+
+**2. A different gate set, chosen so a fast classical simulator can run it.** SPIQ finds its starting point with stim, a simulator that only handles Clifford gates. When every angle is a multiple of π/2, every rotation is a Clifford gate. So SPIQ rewrites the circuit in gates stim understands (`modify_circuit`, `transform_to_allowed_gates`):
+
+| Plain gate | SPIQ version |
+|---|---|
+| H (starting superposition) | S · SX · S |
+| RZ(c · γ) (cost) | RZ(c · γᵢ), with its own angle |
+| RX(2β) (mixer) | S · SX · RZ(2βᵢ) · SX · RZ(5π/2) |
+| CNOT | CNOT (unchanged) |
+
+This rewrite doesn't change what the circuit computes, but it does change the counts, at 2 layers:
+
+| | Plain | SPIQ |
+|---|---|---|
+| CNOTs | 2 · ZZ · p | the same |
+| RZ | (Z + ZZ) · p | (Z + ZZ + 2n) · p, of which n · p are the fixed RZ(5π/2) |
+| Other single-qubit gates | n · p RX, n H | n(1 + 2p) SX, n(2 + p) S |
+| Total gates, P5 new | 588 | 828 |
+| Depth, P1 / P5 new | 23 / 80 | 33 / 90 |
+
+The extra depth is single-qubit gates only; the CNOT depth is the same.
+
+**3. A different starting point.**
+- **Plain QAOA** starts from fixed angles (all 0.5 in the random-initialization runs, Week96–101).
+- **SPIQ** starts from a point its search found:
+  - a genetic algorithm searches over angles of the form kᵢ · π/2;
+  - stim scores each candidate quickly, because at those angles the circuit is all Clifford;
+  - the best point becomes the starting angles, θᵢ = kᵢ · π/2 divided by the gate's coefficient.
+
+  The SPIQ start is therefore a Clifford state, typically spread over only a few bitstrings: 4 for P4 (`bottleneck.md` §2).
+
+**What this means for the runs:**
+- **More freedom, harder search.** P4 has 140 free angles instead of 4. The circuit can reach more states, but the optimizer has far more directions to search. NFT needed about 3000 evaluations on P4 before it improved at all (`bottleneck.md` §3.2).
+- **Why NFT suits it.** Each angle drives exactly one gate, so the energy as a function of any single angle is an exact sine curve. NFT fits that curve and jumps to its minimum. In the plain circuit, one γ drives many gates at once, so this isn't exact.
+- **It doesn't change hardware cost.** The CNOT count is identical. Compiled for hardware, S, SX and RZ all become cheap single-qubit gates (RZ is applied in software), so the extra gates in the SPIQ version cost almost nothing.
+
 ---
 
 ## 2. Gate counts at 2 layers (the setting of every run)

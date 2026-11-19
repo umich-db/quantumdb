@@ -5,6 +5,18 @@ See `RESULTS_INDEX.md` for which week folder holds which run.
 
 ---
 
+## 2026-11-18: `run_nft.sh` takes the optimizer and the budget
+
+**Files:** `logs/run_nft.sh`.
+
+**What changed:** two optional arguments, the optimizer (`1` = COBYLA, `3` = NFT; default 3) and the number of evaluations (default 1000). The result, readout and pickle paths follow the budget. Called with three arguments, it does exactly what it did before.
+
+**Why:** to rerun P4/P5 from the same SPIQ start with 10000 evaluations, under both optimizers (Week117–120).
+
+**Checks:** Week117 and Week119 ran end to end, including postprocessing, and wrote to the `iterations_10000/.../COBYLA` and `.../NFT` paths.
+
+---
+
 ## 2026-11-12: Gate inventory of the QAOA circuits, and hardware compile
 
 **Files:** `base/circuit_gate_report.py` (new), `docs/hamiltonians/circuit_gates.json` (new), `docs/circuitanalysis.md` (new).

@@ -25,6 +25,7 @@ Newest first.
 
 | Date | Formulation | Problem | Result | Where |
 |---|---|---|---|---|
+| 2026-11-18 | qaoa, single-start SPIQ (the Week108/109 starts), **10000 evaluations** instead of 1000, COBYLA (Week117 P4, Week118 P5) and NFT (Week119 P4, Week120 P5) | P4, P5 | **NFT moves on both; COBYLA moves on neither.** P4 NFT: 7.40 → **6.195** (48% of the gap to 4.908); share at the best plan with fallback 0.252 → **0.491**, raw still 0. P5 NFT: 17.59 → **15.661** (21% of the gap to 8.340) and still improving at 10000; the best plan 1605 appears for the first time (3 of 10240 samples, fallback only). COBYLA stops on its own (P4 after 3843 evaluations at 7.387, P5 after 6820 at 17.461). See "P4 and P5 with 10000 evaluations" below. | `outputs/long/Week117–120` (+ `energy/`) |
 | 2026-10-27 | qaoa, single-start SPIQ (the Week105–109 starting points), **NFT optimizer** instead of COBYLA (Week112–116) | P1–P5 | Same as COBYLA everywhere except P2: final energy **P2 4.860 vs 5.100** (exact 3.653), but the share at the best plan is still 0. P1/P3 stay at the ground state (share 1.0). P4/P5 are unchanged (7.390 vs 7.380, 17.504 vs 17.482). See "NFT instead of COBYLA" below. | `outputs/nft/Week112–116` (+ `energy/`) |
 | 2026-10-21 | **q2o vs qaoa, single-start SPIQ starting point only** (no QAOA; q2o needs 30 / 52 qubits) (Week110–111 for q2o, the Week108–109 points for qaoa) | P4, P5 | Share of samples that are valid plans: **P4 qaoa 0.247 vs q2o 0.003; P5 qaoa 0.065 vs q2o 0.000**. With fallback decoding, share at the best plan: P4 0.256 vs 0.188, P5 0.000 vs 0.047. See "Old vs new formulation on P4/P5" below. | `spiq_init_outputs/single_Week108–111` |
 | 2026-10-20 | qaoa, single-start SPIQ, same settings as Week105–107 (Week108–109) | **P4 (5 tables, 15 qubits), P5 (6 tables, 24 qubits)** | Share at the best plan: **P4 0.000 raw / 0.252 with fallback, P5 0.000**. See "Larger problems" below. | `outputs/spiq/Week108–109` (+ `energy/`) |
@@ -186,12 +187,52 @@ Week112–116 restart QAOA from exactly the single-start SPIQ points of Week105�
 
 What this shows:
 - **NFT works better than COBYLA only on P2.** It closes 18% of the gap from the start to the ground state, against COBYLA's 2%. That is not enough to change the readout: the samples move between the same bad plans (465, 900, 960), and the best plan (315) shows up once in 10240 samples.
-- **On P4 and P5 both optimizers barely move** (1–3% of the gap). The bottleneck is the starting point and the circuit depth, not the optimizer. Changing the optimizer won't fix P4/P5. A better SPIQ start or more layers might.
+- **On P4 and P5 both optimizers barely move** (1–3% of the gap) within 1000 evaluations. With 10000, NFT does move on P4; see "P4 and P5 with 10000 evaluations" below.
 - **On P1 and P3 SPIQ already lands on the answer**, so there is nothing left to optimize.
 
 - **On P2, NFT was still improving when the budget ran out:** its best energy dropped mainly in the last 250 evaluations. A larger budget is the obvious next test for P2.
 
 Plots: `graphs/nft.rmd`, with energy-over-iteration plots of NFT vs COBYLA and first-vs-final optimal-ratio tables. Also `graphs/formulation.rmd` section 10.
+
+### P4 and P5 with 10000 evaluations (2026-11-18)
+
+Week117 (COBYLA) and Week119 (NFT) restart from the same Week108 SPIQ point as Week108/115. The only change is the budget: 10000 evaluations instead of 1000.
+
+| Run | Evaluations used | Best energy after 1k / 3k / 5k / end | Gap closed (exact 4.908) | Share at best plan, raw / fallback | Samples |
+|---|---|---|---|---|---|
+| COBYLA, 1000 (Week108) | 1000 | 7.380 | 3% | 0 / 0.252 | 330 50%, 2700 25%, 7200 25% |
+| **COBYLA, 10000 (Week117)** | **3843** (stopped on its own) | 7.388 / 7.387 / – / **7.387** | 1% | 0 / 0.250 | the same three plans |
+| NFT, 1000 (Week115) | 1000 | 7.390 | 0.4% | 0 / 0.252 | 330 / 2700 / 7200 |
+| **NFT, 10000 (Week119)** | 10000 | 7.396 / 7.285 / 6.203 / **6.195** | **48%** | **0 / 0.491** | two bitstrings, ~50% each (below) |
+
+What this shows:
+- **COBYLA is stuck, not short of budget.** Its trust region shrinks to the minimum size, so it stops after 3843 evaluations. Its best energy (7.387 vs 7.380) is the same within shot noise.
+- **NFT escapes the plateau, but only after about 3000 evaluations.** Its best energy is flat until evaluation ~3100. It then falls in steps to 6.34 by evaluation 4174, and barely changes after that (6.195 at 10000). With 140 angles, NFT needs about 21 full passes over all angles before the first real improvement. That is why 1000 evaluations (about 7 passes) showed nothing.
+- **The final state is two bitstrings, about 50% each:**
+  - `111111001011000`: a valid plan with cost 330, the second-best order (tables 2 and 3 swapped).
+  - `101111011011000`: invalid. Table 0 is in the first step, leaves in the second step, and returns in the third (a penalty-B violation). It is two bit flips from the best plan's bitstring (in step 2, table 3 is in place of table 0), and the fallback repairs it to 165.
+
+  So the optimizer is moving toward the best plan, but through a state that breaks the "stay joined" rule. The raw share at the best plan is still 0.
+
+Why the best plan is still missed (energies of each state, share of each plan at the start and the end, possible causes): `docs/bottleneck.md`.
+
+**P5 (Week118 COBYLA, Week120 NFT)**, from the Week109 start, best plan 1605, exact energy 8.340:
+
+| Run | Evaluations used | Best energy after 1k / 2k / 5k / 9k / end | Gap closed | Distinct bitstrings, start → end | Samples with fallback cost ≤ 8115 | Median fallback cost | Best plan 1605 (raw / fallback) |
+|---|---|---|---|---|---|---|---|
+| COBYLA, 1000 (Week109) | 1000 | 17.482 | 1% | – | – | – | 0 / 0 |
+| **COBYLA, 10000 (Week118)** | **6820** (stopped on its own) | 17.489 / 17.484 / 17.461 / – / **17.461** | 1% | 16 → 21 | 6.3% → 6.5% | 10600 → 10600 | 0 / 0 |
+| NFT, 1000 (Week116) | 1000 | 17.504 | 1% | – | – | – | 0 / 0 |
+| **NFT, 10000 (Week120)** | 10000 | 17.522 / 16.714 / 16.463 / 16.168 / **15.661** | **21%** | 16 → 76 | 6.2% → **24.7%** | 10600 → **9015** | 0 / **3 samples** |
+
+What this shows:
+- **The pattern is the same as P4.** COBYLA stops on its own with nothing gained. NFT is flat for about 1700 evaluations, then drops in steps at evaluations ~1700–1900 and again after ~8000.
+- **NFT on P5 was still improving when the budget ran out.** Its best energy fell from 16.168 to 15.661 in the last 1000 evaluations. A larger budget would probably go further.
+- **The start is 16 bitstrings at about 6% each**, a Clifford state like P4's. NFT moves the weight onto about 6 of them and their neighbours, at ~12.5% each, all with cheaper plans: a quarter of the samples now repair to a plan costing at most 8115.
+- **The best plan appears for the first time** (3 of 10240 samples, only after fallback repair), but it is still far from the dominant states. The energy (15.66) is also still far above the minimum (8.34).
+- **Run time:** about 6 h (COBYLA) and 7.6 h (NFT) with four runs in parallel, much less than the ~13 s per evaluation measured early on. The energy step is cheap while the samples stay on few distinct bitstrings.
+
+Plots: not yet; `graphs/nft.rmd` covers the 1000-evaluation runs.
 
 
 ## Multi-start runs (`outputs/multi-spiq/energy/WeekNN` = energy logs, `outputs/multi-spiq/WeekNN` = postprocessed readouts)
@@ -240,6 +281,15 @@ QAOA with the **NFT** optimizer (`--optimizer 3`, 1000 evaluations, reps 2), new
 | Week114 | P3 (start from Week107) | 2.334 = ground; at best plan 1.0 |
 | Week115 | P4 (start from Week108) | 7.390 (COBYLA 7.380, exact 4.908); at best plan 0 raw / 0.252 fallback |
 | Week116 | P5 (start from Week109) | 17.504 (COBYLA 17.482, exact 8.340); at best plan 0 |
+
+Same setup with **10000 evaluations**, started with `bash logs/run_nft.sh <idx> <week> <spiq_week> <1=COBYLA|3=NFT> 10000`. The readouts are in `outputs/long/WeekNN/`, the energy logs and pickles in `outputs/long/energy/WeekNN/`, and the container logs in `logs/long_WeekNN_inputN.log`.
+
+| Week | Problem | Notes |
+|---|---|---|
+| Week117 | P4, COBYLA (start from Week108) | Stopped by itself after 3843 evaluations; 7.387; at best plan 0 raw / 0.250 fallback |
+| Week118 | P5, COBYLA (start from Week109) | Stopped by itself after 6820 evaluations; 17.461; at best plan 0 |
+| Week119 | P4, NFT (start from Week108) | 10000 evaluations, **6.195**; at best plan 0 raw / **0.491** fallback |
+| Week120 | P5, NFT (start from Week109) | 10000 evaluations, **15.661** (still improving); best plan 1605 in 3 of 10240 samples (fallback only) |
 
 Week102–104 use the same settings with the new formulation, so their energies are on the "qaoa" scale (exact 1.176 / 3.653 / 2.334). Their SPIQ files end in `_qaoa`, and each week's `energy/` folder holds the response pickle (`response_pickle_trial1_qaoa`). Unlike Week93–95, the readouts have no `#` run-note line; the settings are here and in the logs. Plots: `graphs/formulation.rmd` sections 4–6.
 
